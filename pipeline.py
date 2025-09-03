@@ -2,7 +2,7 @@ from typing import Callable, Union, Iterable, Optional
 from dataclasses import dataclass
 import time, subprocess, reprlib, inspect, multiprocessing as mp
 from search import bfs, dfs
-from utils import exists, tabbed_print
+from utils import exists, tabbed_print, setattrs
 
 @dataclass
 class ExecutionException:
@@ -15,7 +15,7 @@ class ExecutionResult:
 		self.runnable = runnable
 		self.elapsed_time: float = 0
 		self.children:  dict[Union[int, str], 'ExecutionResult'] = {}
-	def completed(self):
+	def success(self):
 		return not exists(self, "exception")
 	def interrupted(self):
 		return isinstance(self.exception.type, KeyboardInterrupt)
@@ -26,7 +26,7 @@ class ExecutionResult:
 	def __setitem__(self, key: Union[int, str], value: 'ExecutionResult'):
 		self.children[key] = value
 	@staticmethod
-	def tabbed_print(obj: 'ExecutionResult'):
+	def _tabbed_print(_, obj: 'ExecutionResult'):
 		runnable_id = obj.runnable.id
 		title_txt = f"{obj.runnable.type()} {runnable_id}"
 		time_txt = f" time: {obj.elapsed_time:.4f}"
@@ -37,7 +37,7 @@ class ExecutionResult:
 			retval_txt = ""
 		status_txt = f" {obj.status_msg()}"
 		exception_txt = None
-		if not obj.completed() and obj.exception.runnable.id == runnable_id:
+		if not obj.success() and obj.exception.runnable.id == runnable_id:
 			exctype = obj.exception.type
 			exception_title_txt = type(exctype).__name__
 			if hasattr(exctype, "stderr"):
@@ -62,9 +62,9 @@ class ExecutionResult:
 			title_txt,":", time_txt, retval_txt, status_txt, exception_txt,
 		)
 	def print(self):
-		bfs(self, ExecutionResult.tabbed_print)
+		dfs(self, ExecutionResult._tabbed_print)
 	def status_msg(self) -> str:
-		if self.completed():
+		if self.success():
 			return "done ✓"
 		elif self.interrupted():
 			return "interrupted ⚠"
@@ -82,6 +82,8 @@ class Runnable:
 			depth=0,
 			verbose=verbose,
 		)
+	def __repr__(self):
+		return f"{self.type()}(id={self.id}, depth={self.depth}, verbose={self.verbose})"
 	def _setattrs(self, **attrs):
 		for name, val in attrs.items():
 			setattr(self, name, val)
@@ -123,39 +125,45 @@ class Runnable:
 	def print(self, *args, **kwargs):
 		if self.verbose:
 			tabbed_print(self.depth, *args, **kwargs)
-	def run(self):
+	def run(self) -> ExecutionResult:
 		raise NotImplementedError()
-	def _run_single(self):
+	def _run_single(self) -> ExecutionResult:
 		pass
 	def type(self) -> str:
 		return type(self).__name__
 	def __call__(self):
-		return self.run()
+		self.run()
+		self.result.print()
+		return self.result
+
+	def _set_auto_id(self):
+		raise NotImplementedError()
+
 	@staticmethod
-	def _set_id_attrs(parent: Optional['Runnable'], obj: 'Runnable'):
-		if obj.id == None:
-			obj.id = MultiTask.next_id
-			MultiTask.next_id+=1
+	def _set_id_depth_attrs(parent: Optional['Runnable'], obj: 'Runnable'):
+		obj._set_auto_id()
 		if parent != None:
-			for name in MultiTask.REC_ATTRS:
-				setattr(obj, name, getattr(parent, name))
+			obj.depth = parent.depth + 1
+			obj.parent = parent
+			setattrs(parent, obj, MultiTask.REC_ATTRS)
 	@staticmethod
 	def _init(parent: Optional['Runnable'], obj: 'Runnable'):
-		Runnable._set_id_attrs(parent, obj)
+		Runnable._set_id_depth_attrs(parent, obj)
 		obj.print(f"{obj.type()} {obj.id} started")
 		obj.result = ExecutionResult(obj)
 		obj.result.depth = obj.depth
 		obj.start = time.perf_counter()
+		obj._run_single()
 	@staticmethod
 	def _final(parent: Optional['Runnable'], obj: 'Runnable') -> bool:
-		obj._run_single()
 		elapsed_time = time.perf_counter() - obj.start
 		obj.result.elapsed_time = elapsed_time
 		obj.print(f"{obj.type()} {obj.id} {obj.result.status_msg()} {elapsed_time:.4f}")
 
 		if parent != None:
 			parent.result[obj.id] = obj.result
-		return obj.result.completed()
+			parent.result.elapsed_time += elapsed_time
+		return obj.result.success()
 	@staticmethod
 	def _cleanup(parent: Optional['Runnable'], obj: 'Runnable'):
 		if parent != None:
@@ -190,13 +198,15 @@ class Task(Runnable):
 				raise TypeError(f"Command has wrong type {type(cmd)}")
 		self.kwargs = kwargs
 		super().__init__(id, verbose)
+	def _set_auto_id(self):
+		pass
 	def set_shell(self):
 		self.callable = self.shell_capture
 	def is_shell(self):
 		return self.callable == self.shell_capture
-	def _run_single(self):
+	def _run_single(self) -> ExecutionResult:
 		return self.run()
-	def run(self):
+	def run(self) -> ExecutionResult:
 		if self.is_shell():
 			self.print_process = mp.Process(
 				target=Task.shell_print,
@@ -210,6 +220,7 @@ class Task(Runnable):
 			self.result.exception = ExecutionException(self, e)
 		if self.is_shell():
 			self.print_process.join()
+		return self.result
 
 	@staticmethod
 	def shell_capture(*args, **kwargs):
@@ -239,12 +250,11 @@ class MultiTask(Runnable):
 		verbose=False,
 	):
 		super().__init__(id, verbose)
-		self._set_tree_onedepth(children)
-	def _set_tree_onedepth(self, children):
 		self.children = children
-		for child in self.children:
-			child.parent = self
-			child.depth += 1
+	def _set_auto_id(self):
+		if self.id == None:
+			self.id = MultiTask.next_id
+			MultiTask.next_id+=1
 class Pipeline(MultiTask):
 	'''Runs its children runnables sequentially'''
 	def __init__(
@@ -254,13 +264,14 @@ class Pipeline(MultiTask):
 		verbose=False,
 	):
 		super().__init__(*children, id=id, verbose=verbose)
-	def run(self):
-		return dfs(
+	def run(self) -> ExecutionResult:
+		dfs(
 			self,
 			Runnable._init,
 			Runnable._final,
 			Runnable._cleanup,
 		)
+		return self.result
 
 class Multiplexer(Pipeline):
 	'''Chooses number of its runnables given an indexing parameter. When the index is boolean, True becomes 0 and vice-versa'''
@@ -308,7 +319,7 @@ if __name__ == "__main__":
 				Task(demo_task_1),
 				Task(demo_task_2),
 			),
-			demo_task_3,
+			demo_task_5,
 			Task(demo_task_4),
 			verbose=True,
 		)()
@@ -318,7 +329,7 @@ if __name__ == "__main__":
 			),
 			Pipeline(
 				Task(demo_task_2),
-				demo_task_3,
+				demo_task_5,
 			),
 			verbose=True,
 		)()
@@ -407,4 +418,7 @@ if __name__ == "__main__":
 			verbose=True,
 			id="a"
 		)()
-	test1()
+	def test5():
+		Task(demo_task_1)()
+
+	test5()
