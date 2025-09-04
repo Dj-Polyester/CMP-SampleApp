@@ -1,18 +1,36 @@
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 from collections import deque
-from utils import exists, setattrs, hasattrs, stringify
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from utils import exists, setattrs, hasattrs, stringify, status_msg
+from test import Test
+
+class Config: pass
+
+def set_config(obj: Any, config: Union[str, Config]):
+	if isinstance(config, str):
+		obj.config = type(obj).PRECONFIGS[config]
+	elif isinstance(config, Config):
+		obj.config = config
+	elif not exists(obj, "config"):
+		raise TypeError(f"Config has type {type(config)}")
 
 @dataclass
-class TraverseContainerConfig:
+class TraverseContainerConfig(Config):
 	_type: type
 	top_index: int
 	pop_func: str
 	add_single_func: str = "append"
 	add_multiple_func: str = "extend"
 class TraverseContainer:
-	def __init__(self, config: TraverseContainerConfig):
-		self.config = config
+	PRECONFIGS = {
+		"stack": TraverseContainerConfig(list, -1, "pop"),
+		"queue": TraverseContainerConfig(deque, 0, "popleft"),
+	}
+	def __init__(
+		self,
+		config: Union[str, TraverseContainerConfig],
+	):
+		set_config(self, config)
 	def setup(self, args=None):
 		self._container = self.config._type() if args == None else self.config._type(args)
 		self.pop = getattr(self._container, self.config.pop_func)
@@ -28,22 +46,23 @@ class TraverseContainer:
 		return self._container[self.config.top_index] if self._container else None
 
 @dataclass
-class TraverseTypeConfig:
-	container: TraverseContainerConfig
+class TraverseTypeConfig(Config):
 	add_special_token_before: bool
 	proc_fun: Callable
+	container: Union[str, TraverseContainerConfig]
+	parent_container: Union[str, TraverseContainerConfig] = "stack"
 
 class Traverse:
 	PRECONFIGS = {
 		"bfs": TraverseTypeConfig(
-			container = TraverseContainerConfig(deque, 0, "popleft"),
 			add_special_token_before=False,
 			proc_fun=lambda x: x,
+			container = "queue",
 		),
 		"dfs": TraverseTypeConfig(
-			container = TraverseContainerConfig(list, -1, "pop"),
 			add_special_token_before=True,
 			proc_fun=lambda x: reversed(x),
+			container = "stack",
 		),
 	}
 	VALID_CALLBACKS = [
@@ -60,7 +79,7 @@ class Traverse:
 			):
 				self.recurse(
 					obj,
-					_type=name,
+					config=name,
 					*setup_args,
 					**setup_kwargs,
 				)
@@ -69,21 +88,16 @@ class Traverse:
 			raise AttributeError(f"{type(self)} object has no attribute {name}")
 	def setup(
 		self,
-		_type: Optional[str] = None,
-		config: Optional[TraverseTypeConfig] = None,
+		config: Union[str, TraverseTypeConfig],
 		special_token: Any = None,
 		**callbacks: Callable,
 	):
 		# Config
-		if _type != None:
-			self.config = Traverse.PRECONFIGS[_type]
-		elif config != None:
-			self.config = config
-		elif not exists(self, "config") or not isinstance(self.config, TraverseTypeConfig):
-			raise ValueError("Either traverse type or config must be provided")
-		# Container
+		set_config(self, config)
+		# Containers
 		if not exists(self, "containercls"):
 			self.containercls = TraverseContainer(self.config.container)
+			self.parent_containercls = TraverseContainer(self.config.parent_container)
 		# Special token
 		self.special_token = special_token
 		# Callbacks
@@ -132,23 +146,27 @@ class Traverse:
 			node = parent_container.pop()
 
 if __name__ == "__main__":
-	def callback(parent, obj):
+	def callbacktxt(prefix, parent, obj):
 		parent_id = "" if parent == None else parent.id
-		print(f"callback obj {parent_id} {obj.id}")
-	def after(parent, obj):
-		parent_id = "" if parent == None else parent.id
-		print(f"after obj {parent_id} {obj.id}")
-	def cleanup(parent, obj):
-		parent_id = "" if parent == None else parent.id
-		print(f"cleanup obj {parent_id} {obj.id}")
+		_callbacktxt = f"{prefix} {parent_id} {obj.id}"
+		DummyBase.buffertxt.append(_callbacktxt)
+		print(_callbacktxt)
+	def callback(*args):
+		callbacktxt("callback", *args)
+	def after(*args):
+		callbacktxt("after", *args)
+	def cleanup(*args):
+		callbacktxt("cleanup", *args)
 
 	class DummyBase(Traverse):
+		buffertxt: list
 		def __init__(self, id, *children):
+			DummyBase.buffertxt = []
 			self.id = id
 			self.children = children
 	class Dummy(DummyBase):
-		def __call__(self):
-			self.bfs(
+		def __call__(self, _type):
+			getattr(self, _type)(
 				callback = callback,
 				after = after,
 				cleanup = cleanup,
@@ -156,40 +174,55 @@ if __name__ == "__main__":
 
 	class IDummy(DummyBase):
 		@staticmethod
-		def callback(parent, obj):
-			parent_id = "" if parent == None else parent.id
-			print(f"callback obj {parent_id} {obj.id}")
+		def callback(*args):
+			callbacktxt("callback", *args)
 		@staticmethod
-		def after(parent, obj):
-			parent_id = "" if parent == None else parent.id
-			print(f"after obj {parent_id} {obj.id}")
+		def after(*args):
+			callbacktxt("after", *args)
 		@staticmethod
-		def cleanup(parent, obj):
-			parent_id = "" if parent == None else parent.id
-			print(f"cleanup obj {parent_id} {obj.id}")
-		def __call__(self):
-			self.bfs()
+		def cleanup(*args):
+			callbacktxt("cleanup", *args)
+		def __call__(self, _type):
+			getattr(self, _type)()
 
-	cls_name = Dummy
-	print(cls_name.__name__)
-	d = cls_name(
-		1,
-		cls_name(
-			2,
-			cls_name(
-				4
-			),
-			cls_name(
-				5
-			),
-		),
-		cls_name(
-			3,
-			cls_name(
-				6
-			),
-			cls_name(
-				7
-			),
-		),
-	)()
+	class TraverseTest(Test):
+		def compare_implementations(self):
+			buffer_txts = []
+			_types = Traverse.PRECONFIGS
+			cls_names = [
+				Dummy,
+				IDummy,
+			]
+			cls_names_str = [t.__name__ for t in cls_names]
+			for _type in _types:
+				for cls_name, cls_name_str in zip(cls_names, cls_names_str):
+					print(f"\n{cls_name_str} {_type}")
+					cls_name(
+						1,
+						cls_name(
+							2,
+							cls_name(
+								4
+							),
+							cls_name(
+								5
+							),
+						),
+						cls_name(
+							3,
+							cls_name(
+								6
+							),
+							cls_name(
+								7
+							),
+						),
+					)(_type)
+					buffer_txts.append(DummyBase.buffertxt)
+				is_equal = buffer_txts[0] == buffer_txts[1]
+				print(
+					f"\n{stringify(cls_names_str)} {_type} {status_msg(int(not is_equal))}"
+				)
+				assert is_equal
+	test=TraverseTest()
+	test()
