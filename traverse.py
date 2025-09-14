@@ -6,6 +6,7 @@ from utils import (
 	setattrs,
 	setattrs_notnone,
 	setattrs_check,
+	hasattrs,
 	stringify,
 	stringify_map,
 	status_msg,
@@ -14,22 +15,9 @@ from utils import (
 	product_dict,
 	InvalidType,
 	InvalidValue,
+	TraversalUtils,
 )
 from test import Test
-
-StrConfNone = Optional[Union[str, Config]]
-
-def set_configs(obj: Any, config: StrConfNone = None, **configs: StrConfNone):
-	if config != None:
-		configs["config"] = config
-	def set_config(config: StrConfNone):
-		if isinstance(config, str):
-			return type(obj).PRECONFIGS[config]
-		elif isinstance(config, Config):
-			return config
-		elif not exists(obj, "config"):
-			raise InvalidType("Config", config, (str, Config))
-	setattrs_notnone(configs, obj, callback_val = set_config)
 
 class TraverseContainerConfig(Config):
 	"""
@@ -45,55 +33,17 @@ class TraverseContainerConfig(Config):
 		`add_multiple_func (str):` the `add_multiple` method
 	"""
 	PARAMS = {
-		"_type": Config.Param(repr = lambda x: x.__name__),
-		"top_index": Config.Param(),
+		"_type": Config.Param(type, repr = lambda x: x.__name__),
+		"top_index": Config.Param(int),
 	}
 	VALID_PARAMS = {
-		"pop": Config.Param(),
-		"add_single": Config.Param(default = "append"),
-		"add_multiple": Config.Param(default = "extend"),
+		"pop": Config.Param(str),
+		"add_single": Config.Param(str, default = "append"),
+		"add_multiple": Config.Param(str, default = "extend"),
 	}
-	def str_func(self, k):
+	@classmethod
+	def str_func(cls, k):
 		return f"{k}_func"
-class TraverseContainer:
-	"""
-	Given a configuration, the container class implements the following methods automatically:
-		`__call__(self, items=None) -> TraverseContainer`: Adds given items to the container and
-		implements the following methods returning the container
-			`pop() -> Any`: Remove and return the element
-			`add_single(item: Any)`: Add a single item to the container
-			`add_multiple(items: Collection[Any])`: Add multiple items to the container
-		`top() -> Any`: Return the element at the index configured by `top_index`
-		`empty() -> bool`: Return if the container is empty
-	"""
-	PRECONFIGS = {
-		"stack": TraverseContainerConfig(_type=list, top_index=-1, pop_func="pop"),
-		"queue": TraverseContainerConfig(_type=deque, top_index=0, pop_func="popleft"),
-	}
-	def __init__(
-		self,
-		config: Union[str, TraverseContainerConfig],
-	):
-		set_configs(self, config)
-	def setup(self, items=None):
-		self._container = self.config._type() if items == None else self.config._type(items)
-		setattrs(
-			self.config,
-			self,
-			TraverseContainerConfig.VALID_PARAMS,
-			callback_name = lambda name: f"{name}_func",
-			callback_val = lambda val: getattr(self._container, val)
-		)
-	def __call__(self, items=None):
-		container = TraverseContainer(self.config)
-		container.setup(items)
-		return container
-	def empty(self):
-		return not self._container
-	def top(self):
-		return self._container[self.config.top_index] if self._container else None
-	def __repr__(self):
-		return repr(self._container)
 
 class TraverseTypeConfig(Config):
 	"""
@@ -114,15 +64,19 @@ class TraverseTypeConfig(Config):
 		given by `container`.
 	"""
 	PARAMS = {
-		"proc_children": Config.Param(repr = lambda x: x.__name__),
-		"special_token_before_children": Config.Param(),
+		"proc_children": Config.Param(
+			Callable,
+			repr = lambda x: x.__name__,
+		),
+		"special_token_before_children": Config.Param(bool),
 	}
 	VALID_PARAMS = {
-		"_": Config.Param(),
-		"parent": Config.Param(),
-		"backtrack": Config.Param("stack"),
+		"_": Config.Param(Union[str, TraverseContainerConfig]),
+		"parent": Config.Param(Union[str, TraverseContainerConfig]),
+		"backtrack": Config.Param(Union[str, TraverseContainerConfig], "stack"),
 	}
-	def str_func(self, k):
+	@classmethod
+	def str_func(cls, k):
 		return "container" if k=="_" else f"{k}_container"
 
 class TraverseStateConfig(Config):
@@ -150,50 +104,122 @@ class TraverseStateConfig(Config):
 	}
 	PARAMS = {
 		"special_token": Config.Param(...),
-		"backward_mode": Config.Param("backtrace"),
-		"verbose": Config.Param(False),
+		"backward_mode": Config.Param(str, "backtrace"),
+		"verbose": Config.Param(bool, False),
 	}
 	VALID_PARAMS = {
-		"init": Config.Param(),
-		"finalize": Config.Param(),
-		"cleanup": Config.Param(),
+		"init": Config.Param(Callable),
+		"finalize": Config.Param(Callable),
+		"cleanup": Config.Param(Callable),
 	}
-	def str_func(self, k):
+	def backward_container(self):
+		bm = self.VALID_BACKWARD_MODES[
+			self.backward_mode
+		]
+		if bm != None:
+			return True, self.str_func(bm)
+		return False, self.backward_mode
+	@classmethod
+	def str_func(cls, k):
 		return f"node_{k}"
 
-@dataclass
-class TraverseState(State):
-	def __init__(
+class TraverseContainer(TraversalUtils):
+	"""
+	Given a configuration, the container class implements the following methods automatically:
+		`__call__(self, items=None) -> TraverseContainer`: Adds given items to the container and
+		implements the following methods returning the container
+			`pop() -> Any`: Remove and return the element
+			`add_single(item: Any)`: Add a single item to the container
+			`add_multiple(items: Collection[Any])`: Add multiple items to the container
+		`top() -> Any`: Return the element at the index configured by `top_index`
+		`empty() -> bool`: Return if the container is empty
+	"""
+	PRECONFIGS = {
+		"stack": TraverseContainerConfig(_type=list, top_index=-1, pop_func="pop"),
+		"queue": TraverseContainerConfig(_type=deque, top_index=0, pop_func="popleft"),
+	}
+	def setup(self, config: Union[str, TraverseContainerConfig]):
+		self.set_configs(config)
+	def _setup(self, items=None):
+		self._container = self.config._type() if items == None else self.config._type(items)
+		setattrs(
+			self.config,
+			self,
+			TraverseContainerConfig.VALID_PARAMS,
+			callback_name = lambda name: f"{name}_func",
+			callback_val = lambda val: getattr(self._container, val)
+		)
+	def __call__(self, items=None):
+		container = TraverseContainer(self.config)
+		container._setup(items)
+		return container
+	def empty(self):
+		return not self._container
+	def top(self):
+		return self._container[self.config.top_index] if self._container else None
+	def __repr__(self):
+		return repr(self._container)
+
+class TraverseState(TraversalUtils, State):
+	PRECONFIGS = {
+		"bfs": TraverseTypeConfig(
+			special_token_before_children=False,
+			proc_children=lambda x: x,
+			container = "queue",
+		),
+		"dfs": TraverseTypeConfig(
+			special_token_before_children=True,
+			proc_children=lambda x: reversed(x),
+			container = "stack",
+		),
+	}
+	def setup(
 		self,
 		config: Optional[TraverseStateConfig] = None,
 		type_config: Optional[Union[str, TraverseTypeConfig]] = None,
 		**containers,
 	):
-		setattrs_check(
-			containers,
-			self,
-			Traverse.VALID_CONTAINER_NAMES,
-		)
-		self.setup(config, type_config)
-	def setup(
-		self,
-		config: Optional[TraverseStateConfig] = None,
-		type_config: Optional[Union[str, TraverseTypeConfig]] = None,
-	):
 		# Configs
-		set_configs(
-			self,
+		self.set_configs(
 			config,
 			type_config=type_config,
 		)
+		# Containers
+		_hasattrs = hasattrs(
+			containers,
+			TraverseTypeConfig.valid_keys(),
+		)
+		if not _hasattrs:
+			_c = self.type_config.container
+			_pc = self.type_config.parent_container
+			_containercls = {
+				"containercls" : TraverseContainer(_c),
+				"parent_containercls" : TraverseContainer(_c) if _pc==None else TraverseContainer(_pc),
+				"backtrack_containercls" : TraverseContainer(self.type_config.backtrack_container),
+			}
+			_containers = dict(
+				zip(self.type_config.valid_keys(), _containercls.values())
+			)
+			containers = {**_containers, **containers}
+		setattrs_check(
+			containers,
+			self,
+			TraverseTypeConfig.valid_keys(),
+			_return = False,
+		)
+
+	def _container(self, name: str):
+		return getattr(self, name)
+	def _callback(self, name: str):
+		return getattr(self.type_config, name)
 	def pop(self, container_name: str):
-		self.node = getattr(self, container_name).pop()
+		self.node = self._container(container_name).pop()
 	def add_single(self, container_name: str, item: Optional[Any] = None):
 		add_item = self.node if item == None else item
-		getattr(self, container_name).add_single(add_item)
+		self._container(container_name).add_single(add_item)
 	def run(self, func_name: str, container_name_parent: str):
-		self.success = getattr(self.config, func_name)(
-			getattr(self, container_name_parent).top(),
+		self.success = self._callback(func_name)(
+			self._container(container_name_parent).top(),
 			self.node,
 		)
 	def add_children(self):
@@ -226,71 +252,60 @@ class TraverseState(State):
 		if self.config.verbose:
 			print(self)
 
-class Traverse:
-	PRECONFIGS = {
-		"bfs": TraverseTypeConfig(
-			special_token_before_children=False,
-			proc_children=lambda x: x,
-			container = "queue",
-		),
-		"dfs": TraverseTypeConfig(
-			special_token_before_children=True,
-			proc_children=lambda x: reversed(x),
-			container = "stack",
-		),
-	}
-	VALID_CALLBACKS = (
-		"node_init",
-		"node_finalize",
-		"node_backward",
-	)
-	VALID_CONTAINER_NAMES = (
-		"container",
-		"parent_container",
-		"backtrack_container",
-	)
-	def setup(self, config: Union[str, TraverseTypeConfig]):
+class Traverse(TraversalUtils):
+	def setup(
+		self,
+		state_config: Optional[TraverseStateConfig] = None,
+		type_config: Optional[Union[str, TraverseTypeConfig]] = None,
+	):
 		# Configs
-		set_configs(self, config)
-		# Containers
-		if not exists(self, "containercls"):
-			_c = self.config.container
-			_pc = self.config.parent_container
-			self.containercls = TraverseContainer(_c)
-			self.parent_containercls = TraverseContainer(_c) if _pc==None else TraverseContainer(_pc)
-			self.backtrack_containercls = TraverseContainer(self.config.backtrack_container)
-		# Callbacks
-		setattrs_check(
-			self.config.callbacks,
-			self,
-			Traverse.VALID_CALLBACKS,
+		self.set_configs(
+			state_config=state_config,
+			type_config=type_config,
 		)
+		# Containers
+		_c = self.type_config.container
+		_pc = self.type_config.parent_container
+		self.containercls = TraverseContainer(_c)
+		self.parent_containercls = TraverseContainer(_c) if _pc==None else TraverseContainer(_pc)
+		self.backtrack_containercls = TraverseContainer(self.type_config.backtrack_container)
+		# Callbacks
+		_hasattrs = hasattrs(
+			self.state_config,
+			TraverseStateConfig.valid_keys(),
+		)
+		if not _hasattrs:
+			setattrs_check(
+				self,
+				self.state_config,
+				TraverseStateConfig.valid_keys(),
+				_return = False,
+			)
+
 	def __getattr__(self, name: str):
-		if name in Traverse.PRECONFIGS:
-			def _recurse(
-				state_config: TraverseStateConfig,
-				obj: Optional[Any] = None,
-			):
-				self.recurse(
-					state_config=state_config,
-					type_config=name,
-					obj=obj,
-				)
-			return _recurse
-		elif exists(self, "state") and exists(self.state, name):
-			return getattr(self.state, name)
+		if exists(self, "state"):
+			if name in self.state.PRECONFIGS:
+				def _recurse(
+					state_config: TraverseStateConfig,
+					obj: Optional[Any] = None,
+				):
+					self.recurse(
+						state_config=state_config,
+						type_config=name,
+						obj=obj,
+					)
+					return _recurse
+			elif exists(self.state, name):
+				return getattr(self.state, name)
 		else:
 			raise AttributeError(f"{type(self)} object has no attribute {name}")
-	def print(self, *args, **kwargs):
-		if exists(self, "verbose") and self.verbose:
-			print(*args, **kwargs)
 	def recurse(
 		self,
 		state_config: TraverseStateConfig,
 		type_config: Union[str, TraverseTypeConfig],
 		obj: Optional[Any] = None,
 	):
-		self.setup(type_config)
+		self.setup(state_config, type_config)
 		if obj == None:
 			obj = self
 		self.state = TraverseState(
@@ -308,24 +323,21 @@ class Traverse:
 		return self.state
 	def recurse_backward(self):
 		self.state.print()
-		if self.state.config.backward_mode == "backtrace":
-			while not self.state.backtrack_container.empty():
-				self.state.backward_container("backtrack_container")
-				self.state.print()
-		elif self.state.config.backward_mode == "parent":
-			while not self.state.backtrack_container.empty():
-				self.state.backward_container("parent_container")
+
+		is_container, bm = self.state.config.backward_container()
+		if is_container:
+			while not getattr(self.state, bm).empty():
+				self.state.backward_container(bm)
 				self.state.print()
 		elif self.state.config.backward_mode == "parent_pointer":
 			while exists(self.state.node, "parent"):
 				self.state.backward_parent()
 				self.state.print()
-
 		else:
 			raise InvalidValue(
 				"Backward mode",
 				self.state.config.backward_mode,
-				Traverse.VALID_BACKWARD_MODES,
+				TraverseStateConfig.VALID_BACKWARD_MODES,
 			)
 
 if __name__ == "__main__":

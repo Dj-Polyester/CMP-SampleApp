@@ -27,8 +27,13 @@ class InvalidValue(ValueError):
 			f"The {varname} has to be {stringify(items, 'or')} "
 			f"but is {var}"
 		)
-
-
+class InvalidAttr(AttributeError):
+	"""Raised when a variable has an invalid type"""
+	def __init__(self, var: Any, items: Sequence, and_or: str):
+		super().__init__(
+			f"Object of type {type(var).__name__} should have {stringify(items, and_or)}"
+			f"as method or property"
+		)
 @dataclass
 class State:
 	success: Optional[bool]
@@ -40,6 +45,7 @@ class Config:
 	NON_DEFAULT = None
 	@dataclass
 	class Param:
+		_type: object = Any
 		default: Any = None
 		repr: Callable = lambda x: x
 		def __post_init__(self):
@@ -50,19 +56,20 @@ class Config:
 	)
 	PARAMS: Mapping[str, Param] = {}
 	VALID_PARAMS: Mapping[str, Param] = {}
-	def str_func(self, k):
-		raise NotImplementedError()
 	def __init__(self, **kwargs):
-		valid_params: Mapping[str, Config.Param] = {
-			self.str_func(k): v for k, v in self.VALID_PARAMS.items()
-		}
-		self.params = {**valid_params, **self.PARAMS}
+		self.params = {**self.valid_params(), **self.PARAMS}
 		defaults = {
 			k: v.default
 			for k, v in self.params.items() if v.default != Config.NON_DEFAULT
 		}
-		props = {**defaults, **kwargs}
-		setattrs(props, self)
+		self.props = {**defaults, **kwargs}
+		self._check_type()
+		setattrs(self.props, self)
+	def _check_type(self):
+		for varname, var in self.props:
+			param = self.params[varname]
+			if not isinstance(var, param._type):
+				raise InvalidType(varname, var, (param._type,))
 	def __repr__(self):
 		repr_map = {
 			k: v.repr(getattr(self, k))
@@ -71,6 +78,41 @@ class Config:
 		return f"{self.type()}({stringify_map(repr_map)})"
 	def type(self):
 		return type(self).__name__
+	@classmethod
+	def str_func(cls, k):
+		raise NotImplementedError()
+	def valid_props(self):
+		return {
+			k: getattr(self, k) for k in self.valid_params().keys()
+		}
+	@classmethod
+	def valid_params(cls):
+		return {
+			cls.str_func(k): v for k, v in cls.VALID_PARAMS.items()
+		}
+	@classmethod
+	def valid_keys(cls):
+		return list(cls.valid_params().keys())
+
+StrConfNone = Optional[Union[str, Config]]
+
+class TraversalUtils:
+	PRECONFIGS = {}
+	def setup(self, *args, **kwargs):
+		raise NotImplementedError()
+	def __init__(self, *args, **kwargs):
+		self.setup(*args, **kwargs)
+	def set_configs(self, config: StrConfNone = None, **configs: StrConfNone):
+		if config != None:
+			configs["config"] = config
+		def set_config(config: StrConfNone):
+			if isinstance(config, str):
+				return self.PRECONFIGS[config]
+			elif isinstance(config, Config):
+				return config
+			elif not exists(self, "config"):
+				raise InvalidType("Config", config, (str, Config))
+		setattrs_notnone(configs, self, callback_val = set_config)
 
 def product_dict(
 	valid_mapping: Mapping,
@@ -100,26 +142,27 @@ def setattrs_check(
 	src: Union[Any, Collection],
 	dst: Any,
 	iterable: Sequence,
-	callback: Callable = lambda x: x,
+	callback_name: Callable = lambda x: x,
+	callback_val: Optional[Callable] = None,
 	condition: Callable = lambda _: True,
+	all_any: Union[str, bool] = "all",
+	_return = True,
 ):
 	setattrs(
 		src,
 		dst,
-		callback=callback,
+		callback_name=callback_name,
+		callback_val=callback_val,
 		condition=condition,
 	)
-	if not hasattrs_all(dst, iterable):
-		raise AttributeError(
-			f"Object should implement or provide {stringify(iterable)} as parameters"
-		)
+	return hasattrs(dst, iterable, all_any, _return)
 
 def setattrs_notnone(
 	src: Union[Any, Collection],
 	dst: Any,
 	iterable: Optional[Iterable[str]] = None,
 	callback_name: Callable = lambda x: x,
-	callback_val: Callable = lambda x: x,
+	callback_val: Optional[Callable] = None,
 ):
 	setattrs(
 		src,
@@ -135,7 +178,7 @@ def setattrs(
 	dst: Any,
 	iterable: Optional[Iterable[str]] = None,
 	callback_name: Callable = lambda x: x,
-	callback_val: Callable = lambda x: x,
+	callback_val: Optional[Callable] = None,
 	condition: Callable = lambda _: True,
 ):
 	"""
@@ -143,6 +186,8 @@ def setattrs(
 	provided, it is iterated upon for the attributes.
 	Otherwise, the src has to inherit from 'Collection'
 	"""
+	if callback_val == None:
+		callback_val = callback_name
 	def getfunc(obj: Any):
 		return obj.__getitem__ if isinstance(obj, MutableMapping) else obj.__getattribute__
 	def setfunc(obj: Any):
@@ -159,23 +204,50 @@ def setattrs(
 		if condition(src_val):
 			dst_setfunc(name, callback_val(src_val))
 
-def hasattrs_all(obj: Union[Any, Container], attrs: Iterable):
-	for attr in attrs:
-		if isinstance(obj, Container):
-			if attr not in obj:
-				return False
-		elif not exists(obj, attr):
-			return False
-	return True
-
-def hasattrs_any(obj: Union[Any, Container], attrs: Iterable):
-	for attr in attrs:
-		if isinstance(obj, Container):
-			if attr in obj:
-				return True
-		elif exists(obj, attr):
+def hasattrs(
+	obj: Union[Any, Container],
+	attrs: Sequence,
+	all_any: Union[str, bool] = "all",
+	_return = True,
+):
+	if all_any == "all":
+		all_any = True
+	elif all_any == "any":
+		all_any = False
+	elif not isinstance(all_any, bool):
+		raise InvalidType("all_any", all_any, ("all", "any"))
+	_hasattrs = all_any
+	def _break_condition(attr, _bool):
+		if _bool:
+			_hasattrs = not _hasattrs
 			return True
-	return False
+		return False
+	def _break_condition_obj(attr):
+		return _break_condition(
+			attr,
+			(all_any and not exists(obj, attr)) or #all
+			(not all_any and exists(obj, attr)) #any
+		)
+	def _break_condition_container(attr):
+		return _break_condition(
+			attr,
+			(all_any and attr not in obj) or #all
+			(not all_any and attr in obj) #any
+		)
+	def break_condition(attr):
+		if isinstance(obj, Container):
+			if _break_condition_container(attr):
+				return True
+		elif _break_condition_obj(attr):
+			return True
+		return False
+	for attr in attrs:
+		if break_condition(attr):
+			break
+	if _return:
+		return _hasattrs
+	if not _hasattrs:
+		raise InvalidAttr(obj, attrs, "and" if all_any else "or")
 
 STATUS = [
 	"✓",
