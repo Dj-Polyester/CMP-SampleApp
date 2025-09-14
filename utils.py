@@ -11,22 +11,22 @@ from typing import (
 	Container,
 )
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 class InvalidType(TypeError):
-    """Raised when a variable has an invalid type"""
-    def __init__(self, varname: str, var, items: Sequence):
-        super().__init__(
-       		f"The {varname} has to be of type {stringify(items, 'or')} "
-        	f"but has type {type(var)}"
-        )
+	"""Raised when a variable has an invalid type"""
+	def __init__(self, varname: str, var, items: Sequence):
+		super().__init__(
+			f"The {varname} has to be of type {stringify(items, 'or')} "
+			f"but has type {type(var)}"
+		)
 class InvalidValue(ValueError):
-    """Raised when a variable has an invalid type"""
-    def __init__(self, varname: str, var, items: Sequence):
-        super().__init__(
-       		f"The {varname} has to be {stringify(items, 'or')} "
-        	f"but is {var}"
-        )
+	"""Raised when a variable has an invalid type"""
+	def __init__(self, varname: str, var, items: Sequence):
+		super().__init__(
+			f"The {varname} has to be {stringify(items, 'or')} "
+			f"but is {var}"
+		)
 
 
 @dataclass
@@ -37,8 +37,40 @@ class State:
 	def failed(self):
 		return isneg(self.success)
 class Config:
+	NON_DEFAULT = None
+	@dataclass
+	class Param:
+		default: Any = None
+		repr: Callable = lambda x: x
+		def __post_init__(self):
+			if self.default is None:
+				self.default = Config.NON_DEFAULT
+	PROPERTIES = (
+		"str_func",
+	)
+	PARAMS: Mapping[str, Param] = {}
+	VALID_PARAMS: Mapping[str, Param] = {}
+	def str_func(self, k):
+		raise NotImplementedError()
 	def __init__(self, **kwargs):
-		setattrs(kwargs, self)
+		valid_params: Mapping[str, Config.Param] = {
+			self.str_func(k): v for k, v in self.VALID_PARAMS.items()
+		}
+		self.params = {**valid_params, **self.PARAMS}
+		defaults = {
+			k: v.default
+			for k, v in self.params.items() if v.default != Config.NON_DEFAULT
+		}
+		props = {**defaults, **kwargs}
+		setattrs(props, self)
+	def __repr__(self):
+		repr_map = {
+			k: v.repr(getattr(self, k))
+			for k, v in self.params.items()
+		}
+		return f"{self.type()}({stringify_map(repr_map)})"
+	def type(self):
+		return type(self).__name__
 
 def product_dict(
 	valid_mapping: Mapping,

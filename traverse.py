@@ -32,44 +32,39 @@ def set_configs(obj: Any, config: StrConfNone = None, **configs: StrConfNone):
 	setattrs_notnone(configs, obj, callback_val = set_config)
 
 class TraverseContainerConfig(Config):
-	VALID_FUNCS = {
-		"pop": None,
-		"add_single": "append",
-		"add_multiple": "extend",
-	}
-	def __init__(self, **kwargs):
-		valid_funcs = {f"{k}_func": v for k, v in TraverseContainerConfig.VALID_FUNCS.items()}
-		kwargs = {**valid_funcs, **kwargs}
-		super().__init__(**kwargs)
-	def __repr__(self):
-		funcs = {
-			f"{k}_func": getattr(self, f"{k}_func") for k in TraverseContainerConfig.VALID_FUNCS.keys()
-		}
-		kwargs = {
-			"_type": self._type.__name__,
-			"top_index": self.top_index,
-			**funcs,
-		}
-		return f"TraverseContainerConfig({stringify_map(kwargs)})"
-class TraverseContainer:
 	"""
-	Arguments for the configuration parameter:
-		`_type (type)`: type of the container used such as deque or list
+	Arguments:
+		`_type (type)`: type of the container used such as `deque` or `list`
 		`top_index (int)`: the index used in `top` method
 
 		The following fields are name of the methods available
 		for objects of type `_type` for which corresponding method is a placeholder for.
+
 		`pop_func (str):` the `pop` method
 		`add_single_func (str):` the `add_single` method
 		`add_multiple_func (str):` the `add_multiple` method
+	"""
+	PARAMS = {
+		"_type": Config.Param(repr = lambda x: x.__name__),
+		"top_index": Config.Param(),
+	}
+	VALID_PARAMS = {
+		"pop": Config.Param(),
+		"add_single": Config.Param(default = "append"),
+		"add_multiple": Config.Param(default = "extend"),
+	}
+	def str_func(self, k):
+		return f"{k}_func"
+class TraverseContainer:
+	"""
 	Given a configuration, the container class implements the following methods automatically:
 		`__call__(self, items=None) -> TraverseContainer`: Adds given items to the container and
 		implements the following methods returning the container
-			`pop() -> Any`: remove and return the element
+			`pop() -> Any`: Remove and return the element
 			`add_single(item: Any)`: Add a single item to the container
 			`add_multiple(items: Collection[Any])`: Add multiple items to the container
-		`top() -> Any`: only return the element at the index configured by `top_index`
-		`empty() -> bool`: return if the container is empty
+		`top() -> Any`: Return the element at the index configured by `top_index`
+		`empty() -> bool`: Return if the container is empty
 	"""
 	PRECONFIGS = {
 		"stack": TraverseContainerConfig(_type=list, top_index=-1, pop_func="pop"),
@@ -85,7 +80,7 @@ class TraverseContainer:
 		setattrs(
 			self.config,
 			self,
-			TraverseContainerConfig.VALID_FUNCS,
+			TraverseContainerConfig.VALID_PARAMS,
 			callback_name = lambda name: f"{name}_func",
 			callback_val = lambda val: getattr(self._container, val)
 		)
@@ -101,27 +96,70 @@ class TraverseContainer:
 		return repr(self._container)
 
 class TraverseTypeConfig(Config):
-	VALID_CONTAINERS = {
-		"container": None,
-		"parent_container": None,
-		"backtrack_container": "stack",
+	"""
+	Arguments:
+		`proc_children (Callable)`: callable to process children before adding them to container
+		`special_token_before_children (bool)`: whether to add the special token before children.
+		True for FILO containers and False for FIFO containers is preferable.
+
+		The following fields are name of the containers for specific purposes.
+		The current node is accessed via `pop` or `top` operation on the container.
+
+		`container (str | TraverseContainerConfig)`: Keeps track of nodes executed in order.
+		Gives the current node to be processed.
+		`parent_container (str | TraverseContainerConfig)`: Gives the parent of the nodes
+		in the `container` until the `special_token`.
+		`backtrack_container (str | TraverseContainerConfig)`: Keeps track of past nodes.
+		Simulates a roll-back operation, gives the node in the reverse order of nodes
+		given by `container`.
+	"""
+	PARAMS = {
+		"proc_children": Config.Param(repr = lambda x: x.__name__),
+		"special_token_before_children": Config.Param(),
 	}
-	def __init__(self, **kwargs):
-		kwargs = {**TraverseTypeConfig.VALID_CONTAINERS, **kwargs}
-		super().__init__(**kwargs)
+	VALID_PARAMS = {
+		"_": Config.Param(),
+		"parent": Config.Param(),
+		"backtrack": Config.Param("stack"),
+	}
+	def str_func(self, k):
+		return "container" if k=="_" else f"{k}_container"
 
 class TraverseStateConfig(Config):
-	def __init__(
-		self,
-		special_token: Any = None,
-		backward_mode: str = "backtrace",
-		verbose: bool = False,
-		**callbacks,
-	):
-		self.special_token = special_token
-		self.backward_mode = backward_mode
-		self.verbose = verbose
-		self.callbacks = callbacks
+	"""
+	Arguments:
+		`special_token (Any)`: This token is popped when all children are processed
+		`backward_mode (str)`: Decides on the roll-back method.
+		Valid attributes are in the `VALID_BACKWARD_MODES` variable. "backtrace" and "parent"
+		uses `backtrack_container` and `parent_container` respectively. "parent_pointer"
+		looks for a `parent` property for each node
+		and follows the path until the property cannot be found.
+		`verbose (bool)`: Verbosity
+
+		The following fields are name of the callback methods for specific purposes
+
+		`node_init (Callable)`: Called on a node when its children are added
+		`node_finalize (Callable)`: Called on a node when its children are processed and
+	the `special_token` is encountered
+		`node_cleanup (Callable)`: Called on the nodes in the order specified by `backward_mode`
+	"""
+	VALID_BACKWARD_MODES = {
+		"backtrace": "backtrack",
+		"parent": "parent",
+		"parent_pointer": None,
+	}
+	PARAMS = {
+		"special_token": Config.Param(...),
+		"backward_mode": Config.Param("backtrace"),
+		"verbose": Config.Param(False),
+	}
+	VALID_PARAMS = {
+		"init": Config.Param(),
+		"finalize": Config.Param(),
+		"cleanup": Config.Param(),
+	}
+	def str_func(self, k):
+		return f"node_{k}"
 
 @dataclass
 class TraverseState(State):
@@ -159,20 +197,20 @@ class TraverseState(State):
 			self.node,
 		)
 	def add_children(self):
-		if self.type_config.add_special_token_before:
+		if self.type_config.special_token_before_children:
 			self.add_single("container", self.config.special_token)
 		if exists(self.node, "children"):
 			children = self.node.children
 			if isinstance(children, dict):
 				children = children.values()
-			self.container.add_multiple(self.type_config.proc_fun(children))
-		if not self.type_config.add_special_token_before:
+			self.container.add_multiple(self.type_config.proc_children(children))
+		if not self.type_config.special_token_before_children:
 			self.add_single("container", self.config.special_token)
 	def forward(self):
 		self.pop("container")
 		if self.node == self.config.special_token: # Processed all children
 			self.pop("parent_container")
-			self.run("node_after", "parent_container")
+			self.run("node_finalize", "parent_container")
 		else:
 			self.add_children()
 			self.run("node_init", "parent_container")
@@ -191,25 +229,20 @@ class TraverseState(State):
 class Traverse:
 	PRECONFIGS = {
 		"bfs": TraverseTypeConfig(
-			add_special_token_before=False,
-			proc_fun=lambda x: x,
+			special_token_before_children=False,
+			proc_children=lambda x: x,
 			container = "queue",
 		),
 		"dfs": TraverseTypeConfig(
-			add_special_token_before=True,
-			proc_fun=lambda x: reversed(x),
+			special_token_before_children=True,
+			proc_children=lambda x: reversed(x),
 			container = "stack",
 		),
 	}
 	VALID_CALLBACKS = (
 		"node_init",
-		"node_after",
+		"node_finalize",
 		"node_backward",
-	)
-	VALID_BACKWARD_MODES = (
-		"backtrace",
-		"parent",
-		"parent_dfs",
 	)
 	VALID_CONTAINER_NAMES = (
 		"container",
@@ -280,13 +313,14 @@ class Traverse:
 				self.state.backward_container("backtrack_container")
 				self.state.print()
 		elif self.state.config.backward_mode == "parent":
-			while exists(self.state.node, "parent"):
-				self.state.backward_parent()
-				self.state.print()
-		elif self.state.config.backward_mode == "parent_dfs":
 			while not self.state.backtrack_container.empty():
 				self.state.backward_container("parent_container")
 				self.state.print()
+		elif self.state.config.backward_mode == "parent_pointer":
+			while exists(self.state.node, "parent"):
+				self.state.backward_parent()
+				self.state.print()
+
 		else:
 			raise InvalidValue(
 				"Backward mode",
@@ -304,8 +338,8 @@ if __name__ == "__main__":
 		callbacktxt("node_init", *args)
 		if args[1].id == 5:
 			return False
-	def node_after(*args):
-		callbacktxt("node_after", *args)
+	def node_finalize(*args):
+		callbacktxt("node_finalize", *args)
 	def node_backward(*args):
 		callbacktxt("node_backward", *args)
 
@@ -332,8 +366,8 @@ if __name__ == "__main__":
 		def node_init(*args):
 			return node_init(*args)
 		@staticmethod
-		def node_after(*args):
-			return node_after(*args)
+		def node_finalize(*args):
+			return node_finalize(*args)
 		@staticmethod
 		def node_backward(*args):
 			return node_backward(*args)
