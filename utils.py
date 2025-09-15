@@ -209,6 +209,24 @@ def setattrs_notnone(
 		lambda x: x != None,
 	)
 
+def _attrs_helper(
+	src: Union[Any, Collection],
+	iterable: Optional[Iterable[str]] = None,
+	callback_name: Callable = lambda x: x,
+	callback_val: Optional[Callable] = None,
+):
+	if callback_val == None:
+		callback_val = callback_name
+	def getfunc(obj: Any):
+		return obj.__getitem__ if isinstance(obj, MutableMapping) else obj.__getattribute__
+	if iterable == None:
+		if isinstance(src, Collection):
+			iterable = src
+		else:
+			raise TypeError(f"src parameter of type {type(src)} should be 'Collection'")
+	src_getfunc = getfunc(src)
+	return src_getfunc, iterable, callback_val
+
 def setattrs(
 	src: Union[Any, Collection],
 	dst: Any,
@@ -222,18 +240,14 @@ def setattrs(
 	provided, it is iterated upon for the attributes.
 	Otherwise, the src has to inherit from 'Collection'
 	"""
-	if callback_val == None:
-		callback_val = callback_name
-	def getfunc(obj: Any):
-		return obj.__getitem__ if isinstance(obj, MutableMapping) else obj.__getattribute__
+	src_getfunc, iterable, callback_val = _attrs_helper(
+		src,
+		iterable,
+		callback_name,
+		callback_val,
+	)
 	def setfunc(obj: Any):
 		return obj.__setitem__ if isinstance(obj, MutableMapping) else obj.__setattr__
-	if iterable == None:
-		if isinstance(src, Collection):
-			iterable = src
-		else:
-			raise TypeError(f"src parameter of type {type(src)} should be 'Collection'")
-	src_getfunc = getfunc(src)
 	dst_setfunc = setfunc(dst)
 	for name in iterable:
 		src_val = src_getfunc(callback_name(name))
