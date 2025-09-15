@@ -10,6 +10,7 @@ from typing import (
 	Callable,
 	Container,
 	ClassVar,
+	KeysView,
 )
 import itertools
 from dataclasses import dataclass, field
@@ -32,7 +33,7 @@ class InvalidAttr(AttributeError):
 	"""Raised when a variable has an invalid type"""
 	def __init__(self, var: Any, items: Union[Any, Sequence], and_or: str = ","):
 		super().__init__(
-			f"Object of type {type(var).__name__} should have {stringify(items, and_or)}"
+			f"Object of type {type(var).__name__} should have {stringify(items, and_or)} "
 			f"as method or property"
 		)
 @dataclass
@@ -66,8 +67,11 @@ class Config:
 		}
 		self._props = {**self._defaults, **kwargs}
 		self._check_type()
-		Attrs().set(self._props, self)
-		pass
+		Attrs().set_check(
+			self._props,
+			self,
+			_return = False,
+		)
 	def is_equal(self, other: 'Config'):
 		return self._props == other._props
 	def _check_type(self):
@@ -129,8 +133,8 @@ class Config:
 			_callback(k): v for k, v in _map.items()
 		}
 	@classmethod
-	def keys(cls, *args, **kwargs):
-		return list(cls.params(*args, **kwargs).keys())
+	def keys(cls, *args, **kwargs) -> KeysView[str]:
+		return cls.params(*args, **kwargs).keys()
 
 StrConfNone = Optional[Union[str, Config]]
 
@@ -217,7 +221,7 @@ class Attrs:
 			def _getfunc(x):
 				_callback = (
 					obj.__getitem__
-					if isinstance(obj, MutableMapping)
+					if isinstance(obj, Mapping)
 					else obj.__getattribute__
 				)
 				if self.condition_name(x):
@@ -228,8 +232,11 @@ class Attrs:
 		self.src_getfunc = getfunc(src)
 	def get(
 		self,
-		src: Union[Any, Collection],
+		src: Any,
 	):
+		"""
+		Returns `src` if it is a `Mapping` attributes otherwise.
+		"""
 		self._helper_getfunc(src)
 		def _attr_gen():
 			for name in self.iterable:
@@ -239,13 +246,12 @@ class Attrs:
 		return {k:v for k, v in _attr_gen()}
 	def set(
 		self,
-		src: Union[Any, Collection],
+		src: Any,
 		dst: Any,
 	):
 		"""
-		Copy attributes of src to dst. If iterable of attribute names is
-		provided, it is iterated upon for the attributes.
-		Otherwise, the src has to inherit from 'Collection'
+		Copies attributes or values of `src` to `dst`
+		depending on whether they are `Mapping` or not.
 		"""
 		self._helper_getfunc(src)
 		def setfunc(obj: Any):
@@ -255,14 +261,18 @@ class Attrs:
 			src_val = self.src_getfunc(self.callback_name(name))
 			if self.condition_val(src_val):
 				self.dst_setfunc(name, self.callback_val(src_val))
-		pass
 	def has(
 		self,
 		obj: Union[Any, Container],
-		attrs: Sequence,
+		attrs: Optional[Iterable] = Param.DEFAULT,
 		all_any: Union[str, bool] = "all",
 		_return = True,
 	):
+		"""
+		Checks if `obj` has `attrs`. if `attrs` is `None`, `iterable` is provided.
+		"""
+		if attrs == Param.DEFAULT:
+			attrs = self.iterable
 		if all_any == "all":
 			all_any = True
 		elif all_any == "any":
@@ -300,6 +310,18 @@ class Attrs:
 			return _hasattrs
 		if not _hasattrs:
 			raise InvalidAttr(obj, attrs, "and" if all_any else "or")
+	def set_check(
+		self,
+		src: Union[Any, Collection],
+		dst: Any,
+		*has_args, **has_kwargs,
+	):
+		"""
+		Checks to see if the elements copied successfully.
+		"""
+		self.set(src, dst)
+		self.has(dst, *has_args, **has_kwargs)
+
 
 STATUS = [
 	"✓",

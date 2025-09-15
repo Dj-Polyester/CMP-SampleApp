@@ -1,15 +1,16 @@
 from typing import Callable, Union, Iterable, Optional
 from dataclasses import dataclass
 import time, subprocess, reprlib, inspect, multiprocessing as mp
-from search import bfs, dfs
-from utils import exists, tabbed_print, setattrs
+from traverse import Traversal, TraversalStateConfig
+from utils import exists, tabbed_print, Attrs
+from test import Test
 
 @dataclass
 class ExecutionException:
 	runnable: 'Runnable'
 	type: BaseException
 
-class ExecutionResult:
+class ExecutionResult(Traversal):
 	"""Result of pipeline execution."""
 	def __init__(self, runnable: 'Runnable'):
 		self.runnable = runnable
@@ -61,8 +62,18 @@ class ExecutionResult:
 			obj.depth,
 			title_txt,":", time_txt, retval_txt, status_txt, exception_txt,
 		)
-	def print(self):
-		dfs(self, ExecutionResult._tabbed_print)
+	def print(
+		self,
+		traversal_type = "dfs",
+		backward_mode = "parent",
+	):
+		print("\nResults:")
+		getattr(self, traversal_type)(
+			state_config = TraversalStateConfig(
+				backward_mode = backward_mode,
+				node_init = ExecutionResult._tabbed_print,
+			)
+		)
 	def status_msg(self) -> str:
 		if self.success():
 			return "done ✓"
@@ -71,7 +82,7 @@ class ExecutionResult:
 		elif self.failed():
 			return "failed ✗"
 		raise TypeError(f"Result has invalid exception type {type(self.exception)}")
-class Runnable:
+class Runnable(Traversal):
 	def __init__(
 		self,
 		id: Optional[Union[int, str]] = None,
@@ -131,8 +142,8 @@ class Runnable:
 		pass
 	def type(self) -> str:
 		return type(self).__name__
-	def __call__(self):
-		self.run()
+	def __call__(self, *args, **kwargs):
+		self.run(*args, **kwargs)
 		self.result.print()
 		return self.result
 
@@ -145,9 +156,9 @@ class Runnable:
 		if parent != None:
 			obj.depth = parent.depth + 1
 			obj.parent = parent
-			setattrs(parent, obj, MultiTask.REC_ATTRS)
+			Attrs(MultiTask.REC_ATTRS).set(parent, obj)
 	@staticmethod
-	def _init(parent: Optional['Runnable'], obj: 'Runnable'):
+	def node_init(parent: Optional['Runnable'], obj: 'Runnable'):
 		Runnable._set_id_depth_attrs(parent, obj)
 		obj.print(f"{obj.type()} {obj.id} started")
 		obj.result = ExecutionResult(obj)
@@ -155,7 +166,7 @@ class Runnable:
 		obj.start = time.perf_counter()
 		obj._run_single()
 	@staticmethod
-	def _final(parent: Optional['Runnable'], obj: 'Runnable') -> bool:
+	def node_finalize(parent: Optional['Runnable'], obj: 'Runnable') -> bool:
 		elapsed_time = time.perf_counter() - obj.start
 		obj.result.elapsed_time = elapsed_time
 		obj.print(f"{obj.type()} {obj.id} {obj.result.status_msg()} {elapsed_time:.4f}")
@@ -165,7 +176,7 @@ class Runnable:
 			parent.result.elapsed_time += elapsed_time
 		return obj.result.success()
 	@staticmethod
-	def _cleanup(parent: Optional['Runnable'], obj: 'Runnable'):
+	def node_backward(parent: Optional['Runnable'], obj: 'Runnable'):
 		if parent != None:
 			parent.result[obj.id] = obj.result
 			parent.result.exception = obj.result.exception
@@ -264,13 +275,20 @@ class Pipeline(MultiTask):
 		verbose=False,
 	):
 		super().__init__(*children, id=id, verbose=verbose)
-	def run(self) -> ExecutionResult:
-		dfs(
-			self,
-			Runnable._init,
-			Runnable._final,
-			Runnable._cleanup,
+	def run(
+		self,
+		traversal_type: str = "dfs",
+		backward_mode: str = "parent",
+	) -> ExecutionResult:
+		if self.verbose:
+			print("\n")
+		state = getattr(self, traversal_type)(
+			state_config = TraversalStateConfig(
+				backward_mode = backward_mode,
+			),
 		)
+		if state.failed():
+			self.recursive_backward()
 		return self.result
 
 class Multiplexer(Pipeline):
@@ -311,114 +329,110 @@ if __name__ == "__main__":
 
 	demo_task_5 = Task(["ls", "afd"])
 	demo_task_6 = Task(["./gradlew", ":composeApp:assembleDebug"])
-
-	def test1():
-		print("Running test1")
-		Pipeline(
-			Pipeline(
-				Task(demo_task_1),
-				Task(demo_task_2),
-			),
-			demo_task_5,
-			Task(demo_task_4),
-			verbose=True,
-		)()
-		Pipeline(
-			Pipeline(
-				Task(demo_task_1),
-			),
-			Pipeline(
-				Task(demo_task_2),
-				demo_task_5,
-			),
-			verbose=True,
-		)()
-	def test2():
-		print("Running test2")
-		Pipeline(
+	class PipelineTest(Test):
+		def test1(self):
 			Pipeline(
 				Pipeline(
 					Task(demo_task_1),
-				),
-				Pipeline(
 					Task(demo_task_2),
-					demo_task_3,
 				),
-				id="a",
-			),
-			demo_task_3,
-			Pipeline(
-				Task(demo_task_1),
-			),
-			Pipeline(
-				Task(demo_task_2),
-				Pipeline(
-					Task(demo_task_1),
-				),
-				Pipeline(
-					Task(demo_task_2),
-					demo_task_3,
-					id="b",
-				),
-			),
-			Task(demo_task_4),
-			verbose=True,
-		)()
-	def test3():
-		print("Running test3")
-		Multiplexer(
-			[2,3,0],
-			Pipeline(
-				Task(demo_task_1),
-			),
-			Pipeline(
-				Task(demo_task_2),
-				demo_task_5,
-			),
-			Pipeline(
-				Task(demo_task_4),
-			),
-			verbose=True,
-		)()
-		Multiplexer(
-			True,
-			Pipeline(
-				Task(demo_task_1),
-			),
-		)()
-		Multiplexer(
-			False,
-			Pipeline(
-				Task(demo_task_1),
-			),
-		)()
-
-	def test4():
-		print("Running test4")
-		def subfunc():
-			Pipeline(
 				demo_task_3,
 				Task(demo_task_4),
+				verbose=True,
 			)()
-		Pipeline(
 			Pipeline(
-				Task(demo_task_1),
-				Task(demo_task_2),
-			),
-			Task(subfunc),
-			verbose=True,
-		)()
-		Pipeline(
+				Pipeline(
+					Task(demo_task_1),
+				),
+				Pipeline(
+					Task(demo_task_2),
+					demo_task_3,
+				),
+				verbose=True,
+			)()
+		def test2(self):
 			Pipeline(
-				Task(demo_task_1),
-				Task(demo_task_2),
-				id="b",
-			),
-			Task(subfunc),
-			verbose=True,
-			id="a"
-		)()
-	def test5():
-		Task(demo_task_1)()
+				Pipeline(
+					Pipeline(
+						Task(demo_task_1),
+					),
+					Pipeline(
+						Task(demo_task_2),
+						demo_task_3,
+					),
+					id="a",
+				),
+				demo_task_3,
+				Pipeline(
+					Task(demo_task_1),
+				),
+				Pipeline(
+					Task(demo_task_2),
+					Pipeline(
+						Task(demo_task_1),
+					),
+					Pipeline(
+						Task(demo_task_2),
+						demo_task_3,
+						id="b",
+					),
+				),
+				Task(demo_task_4),
+				verbose=True,
+			)()
+		def test3(self):
+			Multiplexer(
+				[2,3,0],
+				Pipeline(
+					Task(demo_task_1),
+				),
+				Pipeline(
+					Task(demo_task_2),
+					demo_task_5,
+				),
+				Pipeline(
+					Task(demo_task_4),
+				),
+				verbose=True,
+			)()
+			Multiplexer(
+				True,
+				Pipeline(
+					Task(demo_task_1),
+				),
+			)()
+			Multiplexer(
+				False,
+				Pipeline(
+					Task(demo_task_1),
+				),
+			)()
 
-	test5()
+		def test4(self):
+			def subfunc():
+				Pipeline(
+					demo_task_3,
+					Task(demo_task_4),
+				)()
+				Pipeline(
+					Pipeline(
+						Task(demo_task_1),
+						Task(demo_task_2),
+					),
+					Task(subfunc),
+					verbose=True,
+				)()
+				Pipeline(
+					Pipeline(
+						Task(demo_task_1),
+						Task(demo_task_2),
+						id="b",
+					),
+					Task(subfunc),
+					verbose=True,
+					id="a"
+				)()
+		def test5(self):
+			Task(demo_task_1)()
+	test=PipelineTest()
+	test.test1()

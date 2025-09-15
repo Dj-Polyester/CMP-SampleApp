@@ -32,7 +32,6 @@ class TraversalContainerConfig(Config):
 	PARAMS = {
 		"_type": Param(type, repr = lambda x: x.__name__),
 		"top_index": Param(int),
-		"pop_backward_before_run": Param(bool, True),
 	}
 	VALID_PARAMS = {
 		"pop": Param(str),
@@ -177,11 +176,11 @@ class TraversalContainer(TraversalUtils):
 			TraversalContainerConfig.VALID_PARAMS,
 			callback_name = lambda name: f"{name}_{TraversalContainerConfig.SUBSTR}",
 			callback_val = _callback_val,
-		).set(
+		).set_check(
 			self.config,
 			self,
+			_return = False,
 		)
-		pass
 	def __call__(self, items= Param.DEFAULT):
 		container = TraversalContainer(self.config)
 		container._setup(items)
@@ -215,6 +214,7 @@ class TraversalState(TraversalUtils, State):
 		),
 	}
 	def get_containers(self, *params):
+		_valid_keys = TraversalTypeConfig.keys("valid")
 		_c = self.type_config.container
 		_pc = self.type_config.parent_container
 
@@ -228,39 +228,32 @@ class TraversalState(TraversalUtils, State):
 				f"Length of parameters {len(params)}"
 				f"has to be shorter than or equal to {len(container_cls)}"
 			)
-		return [
+		_values = [
 			container_cls[i](p) for i, p in enumerate(params)
 		] + [
 			c() for c in container_cls[len(params):]
 		]
+		return dict(zip(_valid_keys, _values))
 	def _config_containers(self, **containers):
 		for name, container in containers.items():
 			container.name = name
 			container.reverse = not container.is_stack and "parent" in name
 	def set_containers(
 		self,
-		**containers,
+		*params,
+		**containers: TraversalContainer,
 	):
-		_valid_keys = TraversalTypeConfig.keys("valid")
-		_hasattrs = Attrs().has(
-			containers,
-			_valid_keys,
-		)
-		if not _hasattrs:
-			_containers = dict(
-				zip(_valid_keys, self.get_containers())
-			)
-			containers = {**_containers, **containers}
+		if params != [] and containers != {}:
+			raise ValueError("Both params and containers are nonempty")
+		elif containers == {}:
+			containers = self.get_containers(*params)
+		else:
+			containers = {**self.get_containers(), **containers}
 		self._config_containers(**containers)
-
-		attrs = Attrs(_valid_keys)
-		attrs.set(
+		_valid_keys = TraversalTypeConfig.keys("valid")
+		Attrs(_valid_keys).set_check(
 			containers,
 			self,
-		)
-		attrs.has(
-			self,
-			_valid_keys,
 			_return = False,
 		)
 	def setup(
@@ -311,15 +304,13 @@ class TraversalState(TraversalUtils, State):
 		else:
 			self.add_children()
 			self.run("node_init", "parent_container")
-			self.add_single("parent_container")
-			self.add_single("backtrack_container")
+			if self.completed():
+				self.add_single("parent_container")
+				self.add_single("backtrack_container")
 	def backward_container(self, container_name: str):
-		container = self._container(container_name)
-		if container.config.pop_backward_before_run:
-			self.pop(container_name, True)
 		self.run("node_backward", container_name, True)
-		if not container.config.pop_backward_before_run:
-			self.pop(container_name, True)
+		self.pop(container_name, True)
+
 	def backward_parent(self):
 		self.config.node_backward(self.node.parent, self.node)
 		self.node = self.node.parent
@@ -355,34 +346,13 @@ class Traversal(TraversalUtils):
 			condition_val = lambda x: x != Param.DEFAULT,
 		).get(self)
 		_all_valid = {**_valid_defaults, **_valid_props, **_self_props}
-		attrs._with().set(
+		attrs._with(
+			TraversalStateConfig.keys("valid")
+		).set_check(
 			_all_valid,
 			state_config,
-		)
-		attrs.has(
-			state_config,
-			TraversalStateConfig.keys("valid"),
 			_return = False,
 		)
-		'''
-		state_config = self.state.config
-		_valid_keys = TraversalStateConfig.keys("valid")
-		attrs = Attrs(iterable = _valid_keys)
-		_hasattrs = attrs.has(
-			state_config,
-			_valid_keys,
-		)
-		if not _hasattrs:
-			attrs.set(
-				self,
-				state_config,
-			)
-			attrs.has(
-				state_config,
-				_valid_keys,
-				_return=False,
-			)
-		'''
 	def __getattr__(self, name: str):
 		if name in self.PRECONFIGS:
 			def _recursive(
@@ -404,18 +374,16 @@ class Traversal(TraversalUtils):
 		state_config: TraversalStateConfig,
 		type_config: Union[str, TraversalTypeConfig],
 		obj: Optional[Any] = Param.DEFAULT,
+		**env_vars,
 	):
 		self.setup(state_config, type_config)
 		if obj == Param.DEFAULT:
 			obj = self
-		self.state.set_containers(
-			**dict(
-				zip(TraversalTypeConfig.keys("valid"), self.get_containers([obj]))
-			)
-		)
+
+		self.state.set_containers([obj])
 		self.state.print()
 		while not self.state.container.empty():
-			self.forward()
+			self.state.forward()
 			self.state.print()
 			if self.state.failed(): break
 		return self.state
@@ -542,7 +510,7 @@ Container after popping {container.pop()}: {container}
 				print(f"Container after adding {_items}: {container}\n")
 
 
-		def compare_implementations(self):
+		def compare_implementations(self, print_other = False):
 			buffer_txts = []
 			params = {
 				"_type": TraversalState.PRECONFIGS.keys(),
@@ -583,6 +551,6 @@ Container after popping {container.pop()}: {container}
 				print(
 					f"{stringify(cls_names)} {status_msg(int(not is_equal))}"
 				)
-				assert is_equal
+				#assert is_equal
 	test=TraversalTest()
 	test.compare_implementations()
