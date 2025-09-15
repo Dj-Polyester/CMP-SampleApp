@@ -2,9 +2,7 @@ from typing import Any, Callable, Optional, Union
 from collections import deque
 from utils import (
 	exists,
-	setattrs,
-	setattrs_check,
-	hasattrs,
+	Attrs,
 	stringify,
 	stringify_map,
 	status_msg,
@@ -107,9 +105,18 @@ class TraversalStateConfig(Config):
 		"verbose": Param(bool, False),
 	}
 	VALID_PARAMS = {
-		"init": Param(Callable),
-		"finalize": Param(Callable),
-		"backward": Param(Callable),
+		"init": Param(
+			Callable,
+			lambda _, __:_,
+		),
+		"finalize": Param(
+			Callable,
+			lambda _, __:_,
+		),
+		"backward": Param(
+			Callable,
+			lambda _, __:_,
+		),
 	}
 	VALID_BACKWARD_MODES = {
 		"backtrace": "backtrack",
@@ -156,6 +163,7 @@ class TraversalContainer(TraversalUtils):
 			raise InvalidAttr(self, name)
 	def setup(self, config: Union[str, TraversalContainerConfig]):
 		self.set_configs(config)
+
 	def _setup(self, items= Param.DEFAULT):
 		self._container = self.config._type() if items == Param.DEFAULT else self.config._type(items)
 		def _callback_val(val: Union[str, Callable]):
@@ -165,14 +173,15 @@ class TraversalContainer(TraversalUtils):
 				return val
 			else:
 				raise InvalidVal("val", val, (str, Callable))
-
-		setattrs(
-			self.config,
-			self,
+		Attrs(
 			TraversalContainerConfig.VALID_PARAMS,
 			callback_name = lambda name: f"{name}_{TraversalContainerConfig.SUBSTR}",
 			callback_val = _callback_val,
+		).set(
+			self.config,
+			self,
 		)
+		pass
 	def __call__(self, items= Param.DEFAULT):
 		container = TraversalContainer(self.config)
 		container._setup(items)
@@ -233,7 +242,7 @@ class TraversalState(TraversalUtils, State):
 		**containers,
 	):
 		_valid_keys = TraversalTypeConfig.keys("valid")
-		_hasattrs = hasattrs(
+		_hasattrs = Attrs().has(
 			containers,
 			_valid_keys,
 		)
@@ -244,8 +253,12 @@ class TraversalState(TraversalUtils, State):
 			containers = {**_containers, **containers}
 		self._config_containers(**containers)
 
-		setattrs_check(
+		attrs = Attrs(_valid_keys)
+		attrs.set(
 			containers,
+			self,
+		)
+		attrs.has(
 			self,
 			_valid_keys,
 			_return = False,
@@ -329,20 +342,47 @@ class Traversal(TraversalUtils):
 	):
 		self.state = TraversalState(state_config, type_config)
 		# Callbacks
-		_valid_keys = TraversalStateConfig.keys("valid")
 		state_config = self.state.config
-		_hasattrs = hasattrs(
+		_valid_defaults = state_config.defaults("valid")
+		attrs = Attrs(
+			_valid_defaults.keys(),
+			condition_name = lambda x: exists(state_config, x),
+		)
+		_valid_props = attrs.get(state_config)
+		_self_props = attrs._with(
+			_valid_defaults.keys(),
+			condition_name = lambda x: exists(self, x),
+			condition_val = lambda x: x != Param.DEFAULT,
+		).get(self)
+		_all_valid = {**_valid_defaults, **_valid_props, **_self_props}
+		attrs._with().set(
+			_all_valid,
+			state_config,
+		)
+		attrs.has(
+			state_config,
+			TraversalStateConfig.keys("valid"),
+			_return = False,
+		)
+		'''
+		state_config = self.state.config
+		_valid_keys = TraversalStateConfig.keys("valid")
+		attrs = Attrs(iterable = _valid_keys)
+		_hasattrs = attrs.has(
 			state_config,
 			_valid_keys,
 		)
 		if not _hasattrs:
-			setattrs_check(
+			attrs.set(
 				self,
 				state_config,
-				_valid_keys,
-				_return = False,
 			)
-
+			attrs.has(
+				state_config,
+				_valid_keys,
+				_return=False,
+			)
+		'''
 	def __getattr__(self, name: str):
 		if name in self.PRECONFIGS:
 			def _recursive(
@@ -392,6 +432,8 @@ class Traversal(TraversalUtils):
 			while exists(self.state.node, "parent"):
 				self.state.backward_parent()
 				self.state.print()
+			self.config.node_backward(Param.DEFAULT, self.node)
+			self.state.print()
 		else:
 			raise InvalidVal(
 				"Backward mode",
@@ -407,7 +449,7 @@ if __name__ == "__main__":
 		print(_callbacktxt)
 	def node_init(*args):
 		callbacktxt("node_init", *args)
-		if args[1].id == 5:
+		if args[1].id == 6:
 			return False
 	def node_finalize(*args):
 		callbacktxt("node_finalize", *args)
@@ -539,7 +581,7 @@ Container after popping {container.pop()}: {container}
 					buffer_txts.append(DummyBase.buffertxt)
 				is_equal = buffer_txts[0] == buffer_txts[1]
 				print(
-					f"{stringify(cls_names)} {status_msg(int(not is_equal))}\n"
+					f"{stringify(cls_names)} {status_msg(int(not is_equal))}"
 				)
 				assert is_equal
 	test=TraversalTest()

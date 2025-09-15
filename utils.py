@@ -60,13 +60,14 @@ class Config:
 	SUBSTR: str = ""
 	def __init__(self, **kwargs):
 		self._params = self.params()
-		defaults = {
+		self._defaults = {
 			k: v.default
 			for k, v in self._params.items() if v.default != Param.DEFAULT
 		}
-		self._props = {**defaults, **kwargs}
+		self._props = {**self._defaults, **kwargs}
 		self._check_type()
-		setattrs(self._props, self)
+		Attrs().set(self._props, self)
+		pass
 	def is_equal(self, other: 'Config'):
 		return self._props == other._props
 	def _check_type(self):
@@ -102,21 +103,26 @@ class Config:
 		return {
 			k: getattr(self, k) for k in self.params(*args, **kwargs).keys()
 		}
+	def defaults(self, *args, **kwargs):
+		return {
+			k: v.default
+			for k, v in self.params(*args, **kwargs).items()
+			if v.default != Param.DEFAULT
+		}
 	@classmethod
 	def params(
 		cls,
 		_type: str = "all",
-		substr: Optional[str] = None,
 	) -> Mapping[str, Param]:
-		_map = None
+		_map = Param.DEFAULT
 		_callback = lambda k: k
 		if _type == "valid":
 			_map = cls.VALID_PARAMS
-			_callback = lambda k: cls.str_func(k, substr)
+			_callback = lambda k: cls.str_func(k, cls.SUBSTR)
 		elif _type == "other":
 			_map = cls.PARAMS
 		elif _type == "all":
-			_map = {**cls.PARAMS, **cls.params("valid", substr)}
+			_map = {**cls.PARAMS, **cls.params("valid")}
 		else:
 			raise InvalidVal("_type", _type, ("valid", "other", "all"))
 		return {
@@ -134,8 +140,8 @@ class TraversalUtils:
 		self.setup(*args, **kwargs)
 	def setup(self, *args, **kwargs):
 		raise NotImplementedError()
-	def set_configs(self, config: StrConfNone = None, **configs: StrConfNone):
-		if config != None:
+	def set_configs(self, config: StrConfNone = Param.DEFAULT, **configs: StrConfNone):
+		if config != Param.DEFAULT:
 			configs["config"] = config
 		def set_config(config: StrConfNone):
 			if isinstance(config, str):
@@ -144,7 +150,8 @@ class TraversalUtils:
 				return config
 			elif not exists(self, "config"):
 				raise InvalidType("Config", config, (str, Config))
-		setattrs(configs, self, callback_val = set_config)
+		Attrs(callback_val = set_config).set(configs, self)
+		pass
 	def props(self, config: Config, *args, **kwargs):
 		return {
 			k: getattr(self, k) for k in config.params(*args, **kwargs).keys()
@@ -173,130 +180,126 @@ for combination in product_dict(valid_mapping, condition):
 		if condition(**comb):
 			yield comb
 
-def setattrs_check(
-	src: Union[Any, Collection],
-	dst: Any,
-	iterable: Sequence,
-	callback_name: Callable = lambda x: x,
-	callback_val: Optional[Callable] = None,
-	condition: Callable = lambda _: True,
-	all_any: Union[str, bool] = "all",
-	_return = True,
-):
-	setattrs(
-		src,
-		dst,
-		iterable,
-		callback_name,
-		callback_val,
-		condition,
-	)
-	return hasattrs(dst, iterable, all_any, _return)
-
-def setattrs_notnone(
-	src: Union[Any, Collection],
-	dst: Any,
-	iterable: Optional[Iterable[str]] = None,
-	callback_name: Callable = lambda x: x,
-	callback_val: Optional[Callable] = None,
-):
-	setattrs(
-		src,
-		dst,
-		iterable,
-		callback_name,
-		callback_val,
-		lambda x: x != None,
-	)
-
-def _attrs_helper(
-	src: Union[Any, Collection],
-	iterable: Optional[Iterable[str]] = None,
-	callback_name: Callable = lambda x: x,
-	callback_val: Optional[Callable] = None,
-):
-	if callback_val == None:
-		callback_val = callback_name
-	def getfunc(obj: Any):
-		return obj.__getitem__ if isinstance(obj, MutableMapping) else obj.__getattribute__
-	if iterable == None:
-		if isinstance(src, Collection):
-			iterable = src
-		else:
-			raise TypeError(f"src parameter of type {type(src)} should be 'Collection'")
-	src_getfunc = getfunc(src)
-	return src_getfunc, iterable, callback_val
-
-def setattrs(
-	src: Union[Any, Collection],
-	dst: Any,
-	iterable: Optional[Iterable[str]] = None,
-	callback_name: Callable = lambda x: x,
-	callback_val: Optional[Callable] = None,
-	condition: Callable = lambda _: True,
-):
-	"""
-	Copy attributes of src to dst. If iterable of attribute names is
-	provided, it is iterated upon for the attributes.
-	Otherwise, the src has to inherit from 'Collection'
-	"""
-	src_getfunc, iterable, callback_val = _attrs_helper(
-		src,
-		iterable,
-		callback_name,
-		callback_val,
-	)
-	def setfunc(obj: Any):
-		return obj.__setitem__ if isinstance(obj, MutableMapping) else obj.__setattr__
-	dst_setfunc = setfunc(dst)
-	for name in iterable:
-		src_val = src_getfunc(callback_name(name))
-		if condition(src_val):
-			dst_setfunc(name, callback_val(src_val))
-
-def hasattrs(
-	obj: Union[Any, Container],
-	attrs: Sequence,
-	all_any: Union[str, bool] = "all",
-	_return = True,
-):
-	if all_any == "all":
-		all_any = True
-	elif all_any == "any":
-		all_any = False
-	elif not isinstance(all_any, bool):
-		raise InvalidType("all_any", all_any, ("all", "any"))
-	_hasattrs = all_any
-	def _break_condition(_bool):
-		nonlocal _hasattrs
-		if _bool:
-			_hasattrs = not _hasattrs
-			return True
-		return False
-	def _break_condition_obj(attr):
-		return _break_condition(
-			(all_any and not exists(obj, attr)) or #all
-			(not all_any and exists(obj, attr)) #any
-		)
-	def _break_condition_container(attr):
-		return _break_condition(
-			(all_any and attr not in obj) or #all
-			(not all_any and attr in obj) #any
-		)
-	def break_condition(attr):
-		if isinstance(obj, Container):
-			if _break_condition_container(attr):
+class Attrs:
+	def __init__(
+		self, *args, **kwargs,
+	):
+		self._with(*args, **kwargs)
+	def _with(
+		self,
+		iterable: Optional[Iterable[str]] = Param.DEFAULT,
+		callback_name: Callable = lambda x: x,
+		callback_val: Callable = lambda x: x,
+		condition_name: Callable = lambda _: True,
+		condition_val: Callable = lambda _: True,
+	):
+		self.iterable = iterable
+		self.callback_name = callback_name
+		self.callback_val = callback_val
+		self.condition_name = condition_name
+		self.condition_val = condition_val
+		return self
+	def _helper_iter(
+		self,
+		src: Union[Any, Collection],
+	):
+		if self.iterable == Param.DEFAULT:
+			if isinstance(src, Collection):
+				self.iterable = src
+			else:
+				raise TypeError(f"src parameter of type {type(src)} should be 'Collection'")
+	def _helper_getfunc(
+		self,
+		src: Union[Any, Collection],
+	):
+		self._helper_iter(src)
+		def getfunc(obj: Any):
+			def _getfunc(x):
+				_callback = (
+					obj.__getitem__
+					if isinstance(obj, MutableMapping)
+					else obj.__getattribute__
+				)
+				if self.condition_name(x):
+					return _callback(x)
+				else:
+					return Param.DEFAULT
+			return _getfunc
+		self.src_getfunc = getfunc(src)
+	def get(
+		self,
+		src: Union[Any, Collection],
+	):
+		self._helper_getfunc(src)
+		def _attr_gen():
+			for name in self.iterable:
+				src_val = self.src_getfunc(self.callback_name(name))
+				if self.condition_val(src_val):
+					yield name, self.callback_val(src_val)
+		return {k:v for k, v in _attr_gen()}
+	def set(
+		self,
+		src: Union[Any, Collection],
+		dst: Any,
+	):
+		"""
+		Copy attributes of src to dst. If iterable of attribute names is
+		provided, it is iterated upon for the attributes.
+		Otherwise, the src has to inherit from 'Collection'
+		"""
+		self._helper_getfunc(src)
+		def setfunc(obj: Any):
+			return obj.__setitem__ if isinstance(obj, MutableMapping) else obj.__setattr__
+		self.dst_setfunc = setfunc(dst)
+		for name in self.iterable:
+			src_val = self.src_getfunc(self.callback_name(name))
+			if self.condition_val(src_val):
+				self.dst_setfunc(name, self.callback_val(src_val))
+		pass
+	def has(
+		self,
+		obj: Union[Any, Container],
+		attrs: Sequence,
+		all_any: Union[str, bool] = "all",
+		_return = True,
+	):
+		if all_any == "all":
+			all_any = True
+		elif all_any == "any":
+			all_any = False
+		elif not isinstance(all_any, bool):
+			raise InvalidType("all_any", all_any, ("all", "any"))
+		_hasattrs = all_any
+		def _break_condition(_bool):
+			nonlocal _hasattrs
+			if _bool:
+				_hasattrs = not _hasattrs
 				return True
-		elif _break_condition_obj(attr):
-			return True
-		return False
-	for attr in attrs:
-		if break_condition(attr):
-			break
-	if _return:
-		return _hasattrs
-	if not _hasattrs:
-		raise InvalidAttr(obj, attrs, "and" if all_any else "or")
+			return False
+		def _break_condition_obj(attr):
+			return _break_condition(
+				(all_any and not exists(obj, attr)) or #all
+				(not all_any and exists(obj, attr)) #any
+			)
+		def _break_condition_container(attr):
+			return _break_condition(
+				(all_any and attr not in obj) or #all
+				(not all_any and attr in obj) #any
+			)
+		def break_condition(attr):
+			if isinstance(obj, Container):
+				if _break_condition_container(attr):
+					return True
+			elif _break_condition_obj(attr):
+				return True
+			return False
+		for attr in attrs:
+			if break_condition(attr):
+				break
+		if _return:
+			return _hasattrs
+		if not _hasattrs:
+			raise InvalidAttr(obj, attrs, "and" if all_any else "or")
 
 STATUS = [
 	"✓",
@@ -313,7 +316,7 @@ def status_msg(code: int):
 def stringify_map(map: Mapping):
 	return stringify([f"{k}={v}" for k, v in map.items()])
 def stringify(items: Union[Any, Sequence], and_or: str = ","):
-	if not isinstance(items, Sequence):
+	if not isinstance(items, Sequence) or isinstance(items, str):
 		items = (items,)
 	and_or_str = ", " if and_or == "," else f" {and_or} "
 	return ", ".join(items[:-1]) + f"{and_or_str}{items[-1]}"
