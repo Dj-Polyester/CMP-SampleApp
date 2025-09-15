@@ -9,27 +9,28 @@ from typing import (
 	MutableMapping,
 	Callable,
 	Container,
+	ClassVar,
 )
 import itertools
 from dataclasses import dataclass, field
 
 class InvalidType(TypeError):
 	"""Raised when a variable has an invalid type"""
-	def __init__(self, varname: str, var, items: Sequence):
+	def __init__(self, varname: str, var, items: Union[Any, Sequence]):
 		super().__init__(
 			f"The {varname} has to be of type {stringify(items, 'or')} "
 			f"but has type {type(var)}"
 		)
-class InvalidValue(ValueError):
+class InvalidVal(ValueError):
 	"""Raised when a variable has an invalid type"""
-	def __init__(self, varname: str, var, items: Sequence):
+	def __init__(self, varname: str, var, items: Union[Any, Sequence]):
 		super().__init__(
 			f"The {varname} has to be {stringify(items, 'or')} "
 			f"but is {var}"
 		)
 class InvalidAttr(AttributeError):
 	"""Raised when a variable has an invalid type"""
-	def __init__(self, var: Any, items: Sequence, and_or: str):
+	def __init__(self, var: Any, items: Union[Any, Sequence], and_or: str = ","):
 		super().__init__(
 			f"Object of type {type(var).__name__} should have {stringify(items, and_or)}"
 			f"as method or property"
@@ -41,67 +42,98 @@ class State:
 		return not isneg(self.success)
 	def failed(self):
 		return isneg(self.success)
+
+@dataclass
+class Param:
+	NON_DEFAULT: ClassVar[Any] = ...
+	DEFAULT: ClassVar[Any] = None
+	_type: object = object
+	default: Any = DEFAULT
+	repr: Callable = field(default=lambda x: x, repr=False)
+
 class Config:
-	NON_DEFAULT = None
-	@dataclass
-	class Param:
-		_type: object = Any
-		default: Any = None
-		repr: Callable = lambda x: x
-		def __post_init__(self):
-			if self.default is None:
-				self.default = Config.NON_DEFAULT
 	PROPERTIES = (
 		"str_func",
 	)
 	PARAMS: Mapping[str, Param] = {}
 	VALID_PARAMS: Mapping[str, Param] = {}
+	SUBSTR: str = ""
 	def __init__(self, **kwargs):
-		self.params = {**self.valid_params(), **self.PARAMS}
+		self._params = self.params()
 		defaults = {
 			k: v.default
-			for k, v in self.params.items() if v.default != Config.NON_DEFAULT
+			for k, v in self._params.items() if v.default != Param.DEFAULT
 		}
-		self.props = {**defaults, **kwargs}
+		self._props = {**defaults, **kwargs}
 		self._check_type()
-		setattrs(self.props, self)
+		setattrs(self._props, self)
+	def is_equal(self, other: 'Config'):
+		return self._props == other._props
 	def _check_type(self):
-		for varname, var in self.props:
-			param = self.params[varname]
+		for varname, var in self._props.items():
+			param = self._params[varname]
 			if not isinstance(var, param._type):
-				raise InvalidType(varname, var, (param._type,))
+				raise InvalidType(varname, var, param._type)
 	def __repr__(self):
 		repr_map = {
 			k: v.repr(getattr(self, k))
-			for k, v in self.params.items()
+			for k, v in self._params.items()
 		}
 		return f"{self.type()}({stringify_map(repr_map)})"
 	def type(self):
 		return type(self).__name__
 	@classmethod
-	def str_func(cls, k):
+	def str_func(cls, k, substr) -> str:
 		raise NotImplementedError()
-	def valid_props(self):
+	@classmethod
+	def _str_func(
+		cls,
+		s1: Optional[str] = Param.DEFAULT,
+		s2: Optional[str] = Param.DEFAULT,
+		reverse: bool = False,
+		delim: str = "_",
+		char: str = "",
+	) -> str:
+		if s1 == Param.DEFAULT: s1 = cls.SUBSTR
+		if s2 == Param.DEFAULT: s2 = cls.SUBSTR
+		_str = f"{s1}{delim}{s2}" if not reverse else f"{s2}{delim}{s1}"
+		return s2 if s1==char else _str
+	def props(self, *args, **kwargs):
 		return {
-			k: getattr(self, k) for k in self.valid_params().keys()
+			k: getattr(self, k) for k in self.params(*args, **kwargs).keys()
 		}
 	@classmethod
-	def valid_params(cls):
+	def params(
+		cls,
+		_type: str = "all",
+		substr: Optional[str] = None,
+	) -> Mapping[str, Param]:
+		_map = None
+		_callback = lambda k: k
+		if _type == "valid":
+			_map = cls.VALID_PARAMS
+			_callback = lambda k: cls.str_func(k, substr)
+		elif _type == "other":
+			_map = cls.PARAMS
+		elif _type == "all":
+			_map = {**cls.PARAMS, **cls.params("valid", substr)}
+		else:
+			raise InvalidVal("_type", _type, ("valid", "other", "all"))
 		return {
-			cls.str_func(k): v for k, v in cls.VALID_PARAMS.items()
+			_callback(k): v for k, v in _map.items()
 		}
 	@classmethod
-	def valid_keys(cls):
-		return list(cls.valid_params().keys())
+	def keys(cls, *args, **kwargs):
+		return list(cls.params(*args, **kwargs).keys())
 
 StrConfNone = Optional[Union[str, Config]]
 
 class TraversalUtils:
 	PRECONFIGS = {}
-	def setup(self, *args, **kwargs):
-		raise NotImplementedError()
 	def __init__(self, *args, **kwargs):
 		self.setup(*args, **kwargs)
+	def setup(self, *args, **kwargs):
+		raise NotImplementedError()
 	def set_configs(self, config: StrConfNone = None, **configs: StrConfNone):
 		if config != None:
 			configs["config"] = config
@@ -112,8 +144,11 @@ class TraversalUtils:
 				return config
 			elif not exists(self, "config"):
 				raise InvalidType("Config", config, (str, Config))
-		setattrs_notnone(configs, self, callback_val = set_config)
-
+		setattrs(configs, self, callback_val = set_config)
+	def props(self, config: Config, *args, **kwargs):
+		return {
+			k: getattr(self, k) for k in config.params(*args, **kwargs).keys()
+		}
 def product_dict(
 	valid_mapping: Mapping,
 	condition: Callable = lambda **_: True,
@@ -151,9 +186,10 @@ def setattrs_check(
 	setattrs(
 		src,
 		dst,
-		callback_name=callback_name,
-		callback_val=callback_val,
-		condition=condition,
+		iterable,
+		callback_name,
+		callback_val,
+		condition,
 	)
 	return hasattrs(dst, iterable, all_any, _return)
 
@@ -217,20 +253,19 @@ def hasattrs(
 	elif not isinstance(all_any, bool):
 		raise InvalidType("all_any", all_any, ("all", "any"))
 	_hasattrs = all_any
-	def _break_condition(attr, _bool):
+	def _break_condition(_bool):
+		nonlocal _hasattrs
 		if _bool:
 			_hasattrs = not _hasattrs
 			return True
 		return False
 	def _break_condition_obj(attr):
 		return _break_condition(
-			attr,
 			(all_any and not exists(obj, attr)) or #all
 			(not all_any and exists(obj, attr)) #any
 		)
 	def _break_condition_container(attr):
 		return _break_condition(
-			attr,
 			(all_any and attr not in obj) or #all
 			(not all_any and attr in obj) #any
 		)
@@ -263,13 +298,25 @@ def status_msg(code: int):
 
 def stringify_map(map: Mapping):
 	return stringify([f"{k}={v}" for k, v in map.items()])
-def stringify(items: Sequence, and_or: str = ", "):
-	return ", ".join(items[:-1]) + f" {and_or} " + items[-1]
-def getattr_none(obj: Any, name: str):
-	return getattr(obj, name) if hasattrs_all(obj, name) else None
+def stringify(items: Union[Any, Sequence], and_or: str = ","):
+	if not isinstance(items, Sequence):
+		items = (items,)
+	and_or_str = ", " if and_or == "," else f" {and_or} "
+	return ", ".join(items[:-1]) + f"{and_or_str}{items[-1]}"
 def isneg(res):
 	return isinstance(res, bool) and not res
-def exists(obj: Any, attr: str) -> bool:
-	return hasattr(obj, attr) and getattr(obj, attr) != None
+def exists(obj: Any, name: str) -> bool:
+	"""
+	Check if obj has attr with `name`.
+	Evaluates to the same operation as below expression
+	except it uses object.__getattribute__ to avoid recursion.
+	`return hasattr(obj, name) and getattr(obj, name) != None`
+	"""
+	attr = None
+	try:
+		attr = object.__getattribute__(obj, name)
+	except AttributeError:
+		pass
+	return attr != None
 def tabbed_print(depth: int, *args, **kwargs):
 	print("\t".expandtabs(4)*depth, *args, **kwargs)
