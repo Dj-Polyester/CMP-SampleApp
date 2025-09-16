@@ -1,3 +1,4 @@
+import itertools
 from typing import (
 	Union,
 	Any,
@@ -12,7 +13,6 @@ from typing import (
 	ClassVar,
 	KeysView,
 )
-import itertools
 from dataclasses import dataclass, field
 
 class InvalidType(TypeError):
@@ -51,6 +51,9 @@ class Param:
 	_type: object = object
 	default: Any = DEFAULT
 	repr: Callable = field(default=lambda x: x, repr=False)
+	def __postinit__(self):
+		if self._type == Callable and self.default == Param.DEFAULT:
+			self.repr = lambda x: x.__name__
 
 class Config:
 	PROPERTIES = (
@@ -212,6 +215,21 @@ class Attrs:
 				self.iterable = src
 			else:
 				raise TypeError(f"src parameter of type {type(src)} should be 'Collection'")
+	@staticmethod
+	def getitem(obj: Any, name: str):
+		return (
+			obj.__getitem__(name)
+			if isinstance(obj, Mapping)
+			else obj.__getattribute__(name)
+		)
+	@staticmethod
+	def setitem(obj: Any, name: str, value: Any):
+		(
+			obj.__setitem__(name, value)
+			if isinstance(obj, MutableMapping)
+			else obj.__setattr__(name, value)
+		)
+
 	def _helper_getfunc(
 		self,
 		src: Union[Any, Collection],
@@ -219,13 +237,8 @@ class Attrs:
 		self._helper_iter(src)
 		def getfunc(obj: Any):
 			def _getfunc(x):
-				_callback = (
-					obj.__getitem__
-					if isinstance(obj, Mapping)
-					else obj.__getattribute__
-				)
 				if self.condition_name(x):
-					return _callback(x)
+					return Attrs.getitem(obj, x)
 				else:
 					return Param.DEFAULT
 			return _getfunc
@@ -255,7 +268,7 @@ class Attrs:
 		"""
 		self._helper_getfunc(src)
 		def setfunc(obj: Any):
-			return obj.__setitem__ if isinstance(obj, MutableMapping) else obj.__setattr__
+			return lambda name, val: Attrs.setitem(obj, name, val)
 		self.dst_setfunc = setfunc(dst)
 		for name in self.iterable:
 			src_val = self.src_getfunc(self.callback_name(name))
@@ -359,3 +372,5 @@ def exists(obj: Any, name: str) -> bool:
 	return attr != None
 def tabbed_print(depth: int, *args, **kwargs):
 	print("\t".expandtabs(4)*depth, *args, **kwargs)
+def xnor(a:bool,b:bool):
+	return (a and b) or (not a and not b)

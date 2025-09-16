@@ -13,6 +13,7 @@ from utils import (
 	InvalidVal,
 	InvalidAttr,
 	TraversalUtils,
+	xnor,
 )
 from test import Test
 
@@ -63,10 +64,7 @@ class TraversalTypeConfig(Config):
 		given by `container`.
 	"""
 	PARAMS = {
-		"proc_children": Param(
-			Callable,
-			repr = lambda x: x.__name__,
-		),
+		"proc_children": Param(Callable),
 		"special_token_before_children": Param(bool),
 	}
 	VALID_PARAMS = {
@@ -101,6 +99,7 @@ class TraversalStateConfig(Config):
 		"name": Param(str),
 		"special_token": Param(default = Param.NON_DEFAULT),
 		"backward_mode": Param(str, "backtrace"),
+		"proc_children": Param(Callable, lambda x: x),
 		"verbose": Param(bool, False),
 	}
 	VALID_PARAMS = {
@@ -293,15 +292,26 @@ class TraversalState(TraversalUtils, State):
 			children = self.node.children
 			if isinstance(children, dict):
 				children = children.values()
-			self.container.add_multiple(self.type_config.proc_children(children))
+			self.container.add_multiple(
+				self.type_config.proc_children(
+					self.config.proc_children(children)
+				)
+			)
 		if not self.type_config.special_token_before_children:
 			self.add_single("container", self.config.special_token)
-	def forward(self):
+	def set_env_vars(self, **env_vars):
+		Attrs().set_check(
+			env_vars,
+			self.node,
+			_return = False,
+		)
+	def forward(self, **env_vars):
 		self.pop("container")
 		if self.node == self.config.special_token: # Processed all children
 			self.pop("parent_container")
 			self.run("node_finalize", "parent_container")
 		else:
+			self.set_env_vars(**env_vars)
 			self.add_children()
 			self.run("node_init", "parent_container")
 			if self.completed():
@@ -358,11 +368,13 @@ class Traversal(TraversalUtils):
 			def _recursive(
 				state_config: TraversalStateConfig,
 				obj: Optional[Any] = Param.DEFAULT,
+				**env_vars,
 			):
 				return self.recursive(
 					state_config=state_config,
 					type_config=name,
 					obj=obj,
+					**env_vars,
 				)
 			return _recursive
 		elif exists(self, "state"):
@@ -383,7 +395,7 @@ class Traversal(TraversalUtils):
 		self.state.set_containers([obj])
 		self.state.print()
 		while not self.state.container.empty():
-			self.state.forward()
+			self.state.forward(**env_vars)
 			self.state.print()
 			if self.state.failed(): break
 		return self.state
@@ -410,11 +422,14 @@ class Traversal(TraversalUtils):
 			)
 
 if __name__ == "__main__":
+	def _print_condition(obj: Any, *args, **kwargs):
+		if Attrs.getitem(obj,"holder_type") != "IDummy" or Attrs.getitem(obj,"proc_other"):
+			print(*args, **kwargs)
 	def callbacktxt(prefix, parent, obj):
 		parent_id = "" if parent == Param.DEFAULT else parent.id
 		_callbacktxt = f"{prefix} {parent_id} {obj.id}"
-		DummyBase.buffertxt.append(_callbacktxt)
-		print(_callbacktxt)
+		Dummy.buffertxt.append(_callbacktxt)
+		_print_condition(obj, _callbacktxt)
 	def node_init(*args):
 		callbacktxt("node_init", *args)
 		if args[1].id == 6:
@@ -424,10 +439,10 @@ if __name__ == "__main__":
 	def node_backward(*args):
 		callbacktxt("node_backward", *args)
 
-	class DummyBase(Traversal):
+	class Dummy(Traversal):
 		buffertxt: list
 		def __init__(self, id, *children):
-			DummyBase.buffertxt = []
+			Dummy.buffertxt = []
 			self.id = id
 			self.set_children(children)
 		def set_children(self, children):
@@ -436,26 +451,35 @@ if __name__ == "__main__":
 				child.parent = self
 		def __repr__(self):
 			return repr(self.id)
-		def __call__(self):
-			print("Forward:")
-		def backward(self, state: State):
-			print("Backward:")
+		def backward(self, state: State, **env_vars):
+			_print_condition(env_vars, "Backward:")
 			if state.failed():
 				self.recursive_backward()
-	class Dummy(DummyBase):
-		def __call__(self, _type, backward_mode):
-			super().__call__()
+		def __call__(self, **env_vars):
+			_print_condition(
+				env_vars, f"Class {Attrs.getitem(env_vars, "holder_type")}:\nForward:"
+			)
+
+	class UDummy(Dummy):
+		def __call__(
+			self,
+			_type,
+			backward_mode: str,
+			**env_vars,
+		):
+			super().__call__(**env_vars)
 			state = getattr(self, _type)(
 				state_config = TraversalStateConfig(
 					node_init = node_init,
 					node_finalize = node_finalize,
 					node_backward = node_backward,
 					backward_mode = backward_mode,
-				)
+				),
+				**env_vars,
 			)
-			self.backward(state)
+			self.backward(state, **env_vars)
 
-	class IDummy(DummyBase):
+	class IDummy(Dummy):
 		@staticmethod
 		def node_init(*args):
 			return node_init(*args)
@@ -465,16 +489,45 @@ if __name__ == "__main__":
 		@staticmethod
 		def node_backward(*args):
 			return node_backward(*args)
-		def __call__(self, _type, backward_mode):
-			super().__call__()
+		def __call__(
+			self,
+			_type,
+			backward_mode: str,
+			**env_vars,
+		):
+			super().__call__(**env_vars)
 			state = getattr(self, _type)(
 				state_config = TraversalStateConfig(
 					backward_mode = backward_mode,
-				)
+				),
+				**env_vars,
 			)
-			self.backward(state)
+			self.backward(state, **env_vars)
 
 	class TraversalTest(Test):
+		@staticmethod
+		def _sample(cls_type: type):
+			return cls_type(
+				1,
+				cls_type(
+					2,
+					cls_type(
+						4
+					),
+					cls_type(
+						5
+					),
+				),
+				cls_type(
+					3,
+					cls_type(
+						6
+					),
+					cls_type(
+						7
+					),
+				),
+			)
 		def containers(self):
 			params = {
 				"container_config" : [
@@ -509,48 +562,39 @@ Container after popping {container.pop()}: {container}
 				container.add_multiple(_items)
 				print(f"Container after adding {_items}: {container}\n")
 
-
-		def compare_implementations(self, print_other = False):
-			buffer_txts = []
+		def compare_implementations(self):
+			_assert = False
 			params = {
 				"_type": TraversalState.PRECONFIGS.keys(),
 				"backward_mode": TraversalStateConfig.VALID_BACKWARD_MODES.keys(),
 			}
 			cls_types = [
-				Dummy,
+				UDummy,
 				IDummy,
 			]
+			env_vars = dict(
+				proc_other = False,
+			)
 			cls_names = [t.__name__ for t in cls_types]
-			for param in product_dict(params):
-				print(f"\nParameters: {param}")
-				for cls_type, cls_name in zip(cls_types, cls_names):
-					print(f"Class name: {cls_name}")
-					cls_type(
-						1,
-						cls_type(
-							2,
-							cls_type(
-								4
-							),
-							cls_type(
-								5
-							),
-						),
-						cls_type(
-							3,
-							cls_type(
-								6
-							),
-							cls_type(
-								7
-							),
-						),
-					)(**param)
-					buffer_txts.append(DummyBase.buffertxt)
+			def _callback_inner(cls_type, param):
+				env_vars["holder_type"] = cls_type.__name__
+				TraversalTest._sample(cls_type)(
+					**param,
+					**env_vars,
+				)
+				return Dummy.buffertxt
+			def _callback_outer(buffer_txts):
 				is_equal = buffer_txts[0] == buffer_txts[1]
 				print(
 					f"{stringify(cls_names)} {status_msg(int(not is_equal))}"
 				)
-				#assert is_equal
+				if _assert:
+					assert is_equal
+			self._compare_classes(
+				cls_types,
+				params,
+				_callback_inner,
+				_callback_outer,
+			)
 	test=TraversalTest()
 	test.compare_implementations()

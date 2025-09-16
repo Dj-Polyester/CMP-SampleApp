@@ -1,8 +1,8 @@
-from typing import Callable, Union, Iterable, Optional
-from dataclasses import dataclass
 import time, subprocess, reprlib, inspect, multiprocessing as mp
+from typing import Callable, Union, Iterable, Optional, Sequence
+from dataclasses import dataclass
 from traverse import Traversal, TraversalStateConfig
-from utils import exists, tabbed_print, Attrs
+from utils import InvalidType, exists, tabbed_print, Attrs
 from test import Test
 
 @dataclass
@@ -266,6 +266,19 @@ class MultiTask(Runnable):
 		if self.id == None:
 			self.id = MultiTask.next_id
 			MultiTask.next_id+=1
+	def _state_config(self, *_, **__):
+		raise NotImplementedError()
+	def run(
+		self,
+		traversal_type: str = "dfs",
+		backward_mode: str = "parent",
+	) -> ExecutionResult:
+		if self.verbose:
+			print()
+		state = getattr(self, traversal_type)(self._state_config(backward_mode))
+		if state.failed():
+			self.recursive_backward()
+		return self.result
 class Pipeline(MultiTask):
 	'''Runs its children runnables sequentially'''
 	def __init__(
@@ -275,21 +288,10 @@ class Pipeline(MultiTask):
 		verbose=False,
 	):
 		super().__init__(*children, id=id, verbose=verbose)
-	def run(
-		self,
-		traversal_type: str = "dfs",
-		backward_mode: str = "parent",
-	) -> ExecutionResult:
-		if self.verbose:
-			print("\n")
-		state = getattr(self, traversal_type)(
-			state_config = TraversalStateConfig(
-				backward_mode = backward_mode,
-			),
+	def _state_config(self, backward_mode):
+		return TraversalStateConfig(
+			backward_mode = backward_mode,
 		)
-		if state.failed():
-			self.recursive_backward()
-		return self.result
 
 class Multiplexer(Pipeline):
 	'''Chooses number of its runnables given an indexing parameter. When the index is boolean, True becomes 0 and vice-versa'''
@@ -301,18 +303,27 @@ class Multiplexer(Pipeline):
 		verbose=False,
 	):
 		super().__init__(*children, id=id, verbose=verbose)
-		self.conditions = index
-	def _precondition(self):
-		if isinstance(self.conditions, bool):
-			self.conditions = int(not self.conditions)
-		if isinstance(self.conditions, int):
-			self.conditions = [self.conditions]
-	def run(self):
-		self._precondition()
-		for condition in self.conditions:
-			if condition < len(self.children):
-				if not self.run_child(self.children[condition]):
-					break
+		self.set_conditions(index)
+	def set_conditions(self, index):
+		if isinstance(index, bool):
+			self.conditions = [int(not index)]
+		elif isinstance(index, int):
+			self.conditions = [index]
+		elif isinstance(index, Iterable):
+			self.conditions = index
+		else:
+			raise InvalidType(
+				"index",
+				index,
+				(bool, int, Iterable),
+			)
+	def _proc_children(self, items: Sequence):
+		return [items[c] for c in self.conditions if c < len(items)]
+	def _state_config(self, backward_mode):
+		return TraversalStateConfig(
+			backward_mode = backward_mode,
+			proc_children = self._proc_children,
+		)
 
 if __name__ == "__main__":
 	def demo_task_1():
@@ -435,4 +446,4 @@ if __name__ == "__main__":
 		def test5(self):
 			Task(demo_task_1)()
 	test=PipelineTest()
-	test.test1()
+	test.test3()
