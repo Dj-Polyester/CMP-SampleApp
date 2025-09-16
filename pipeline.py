@@ -1,8 +1,8 @@
-import time, subprocess, reprlib, inspect, multiprocessing as mp
+import time, subprocess, inspect, multiprocessing as mp
 from typing import Callable, Union, Iterable, Optional, Sequence
 from dataclasses import dataclass
 from traversal import Traversal, TraversalStateConfig
-from utils import InvalidType, exists, tabbed_print, Attrs
+from utils import InvalidType, InvalidVal, Param, Result, exists, stringify_map, tabbed_print, Attrs
 from test import Test
 from log import log
 
@@ -11,18 +11,43 @@ class ExecutionException:
 	runnable: 'Runnable'
 	type: BaseException
 
-class ExecutionResult(Traversal):
+@dataclass
+class ExecutionResult(Result, Traversal):
 	"""Result of pipeline execution."""
 	def __init__(self, runnable: 'Runnable'):
 		self.runnable = runnable
 		self.elapsed_time: float = 0
 		self.children:  dict[Union[int, str], 'ExecutionResult'] = {}
-	def success(self):
+	def __repr__(self):
+		_map = {
+			"runnable": self.runnable,
+			"elapsed_time": self.elapsed_time,
+		}
+		_attrs = Attrs(
+			[
+				"exception",
+				"return_value",
+			],
+		).get_notnone(self)
+		_attrs = {**_map, **_attrs}
+		return log.repr(f"ExecutionResult({stringify_map(_attrs)})")
+
+	def completed(self):
 		return not exists(self, "exception")
 	def interrupted(self):
-		return isinstance(self.exception.type, KeyboardInterrupt)
+		return (
+			exists(self,"exception") and
+			isinstance(self.exception.type, KeyboardInterrupt)
+		)
 	def failed(self):
-		return isinstance(self.exception.type, Exception)
+		return (
+			exists(self,"exception") and
+			isinstance(self.exception.type, Exception)
+		)
+	def exists(self):
+		return exists(self, "exception")
+	def none(self):
+		return self.completed()
 	def __getitem__(self, key: Union[int, str]):
 		return self.children[key]
 	def __setitem__(self, key: Union[int, str], value: 'ExecutionResult'):
@@ -33,17 +58,13 @@ class ExecutionResult(Traversal):
 		title_txt = f"{obj.runnable.type()} {runnable_id}"
 		time_txt = f" time: {obj.elapsed_time:.4f}"
 		if exists(obj, "return_value"):
-			retval_repr = (
-				reprlib.repr(obj.return_value)
-				if log.verbose()
-				else obj.return_value
-			)
+			retval_repr = log.repr(obj.return_value)
 			retval_txt = f" return: {retval_repr}"
 		else:
 			retval_txt = ""
 		status_txt = f" {obj.status_msg()}"
 		exception_txt = None
-		if not obj.success() and obj.exception.runnable.id == runnable_id:
+		if not obj.completed() and obj.exception.runnable.id == runnable_id:
 			exctype = obj.exception.type
 			exception_title_txt = type(exctype).__name__
 			if hasattr(exctype, "stderr"):
@@ -80,7 +101,7 @@ class ExecutionResult(Traversal):
 			)
 		)
 	def status_msg(self) -> str:
-		if self.success():
+		if self.completed():
 			return "done ✓"
 		elif self.interrupted():
 			return "interrupted ⚠"
@@ -88,56 +109,23 @@ class ExecutionResult(Traversal):
 			return "failed ✗"
 		raise TypeError(f"Result has invalid exception type {type(self.exception)}")
 class Runnable(Traversal):
+	current_instances: dict[Union[int, str], 'Runnable'] = {}
 	def __init__(
 		self,
 		id: Optional[Union[int, str]] = None,
 	):
-		self._setattrs(
-			id=id,
-			depth=0,
+		Attrs().set({
+				"id":id,
+				"depth": 0,
+			},
+			self,
 		)
+	def __del__(self):
+		del Runnable.current_instances[self.id]
 	def __repr__(self):
 		return f"{self.type()}(id={self.id}, depth={self.depth})"
-	def _setattrs(self, **attrs):
-		for name, val in attrs.items():
-			setattr(self, name, val)
-
-	def _get_parent_runnable(self) -> tuple[Optional['Runnable'], Optional['Runnable']]:
-		def isrunnable(frame):
-			return "self" in frame.f_locals and isinstance(frame.f_locals["self"], Runnable)
-		def is_global_scope(frame):
-			return "__name__" in frame.f_locals and frame.f_locals["__name__"] == "__main__"
-		frame = inspect.currentframe()
-		if frame == None:
-			raise TypeError("Cannot find the current frame frame is None")
-		# Look for the first non-runnable to go outer boundaries of the current runnable
-		while True:
-			frame = frame.f_back
-			if not isrunnable(frame):
-				break
-		# Look for the first runnable if not in global scope yet
-		runnable = None
-		multitask_runnable = None
-		while True:
-			if is_global_scope(frame):
-				break
-			frame = frame.f_back
-			if isrunnable(frame):
-				runnable = frame.f_locals["self"]
-				if isinstance(runnable, Pipeline):
-					multitask_runnable = runnable
-				break
-		if runnable != None and multitask_runnable == None:# couldnt find a pipeline runnable and still not global
-			while True:
-				if is_global_scope(frame):
-					break
-				frame = frame.f_back
-				if isrunnable(frame) and isinstance(runnable, MultiTask):
-					multitask_runnable = frame.f_locals["self"]
-					break
-		return runnable, multitask_runnable
 	def print(self, *args, **kwargs):
-		if log.verbose():
+		if log.level(log.INFO):
 			tabbed_print(self.depth, *args, **kwargs)
 	def run(self) -> ExecutionResult:
 		raise NotImplementedError()
@@ -145,39 +133,78 @@ class Runnable(Traversal):
 		pass
 	def type(self) -> str:
 		return type(self).__name__
+	def _get_parent_runnable_call_stack(self, _ret_multitask = False) -> Optional['Runnable']:
+		def is_runnable_frame(frame, _type = Runnable):
+			return "self" in frame.f_locals and isinstance(frame.f_locals["self"], _type)
+		def is_runnable(obj, _type = Runnable):
+			return isinstance(obj, _type)
+		def is_global(frame):
+			return frame.f_locals == frame.f_globals
+		frame = inspect.currentframe()
+		if frame == None:
+			raise ValueError("Frame is None")
+		runnable: Optional[Task] = None
+		while not is_global(frame):
+			if is_runnable_frame(frame, Task):
+				runnable = frame.f_locals["self"]
+				break
+			frame = frame.f_back
+		if runnable != None: # Found a task
+			if not _ret_multitask:
+				return runnable
+			while exists(runnable, "parent") and not is_runnable(runnable, MultiTask):
+				runnable = runnable.parent
+			if is_runnable(runnable, MultiTask):
+				return runnable
+
+	def _call_setup(self, *args, **kwargs):
+		if not exists(self, "parent"):
+			parent_runnable = self._get_parent_runnable_call_stack(*args, **kwargs)
+			if parent_runnable != None:
+				if not exists(parent_runnable, "children"):
+					parent_runnable.children = []
+				if self not in parent_runnable.children:
+					parent_runnable.children.append(self)
+				Runnable._set_id_depth_parent_attrs(parent_runnable, self)
 	def __call__(self, *args, **kwargs):
+		self._call_setup(*args, **kwargs)
 		self.run(*args, **kwargs)
 		self.result.print()
 		return self.result
-
 	def _set_auto_id(self):
 		raise NotImplementedError()
-
 	@staticmethod
-	def _set_id_depth_attrs(parent: Optional['Runnable'], obj: 'Runnable'):
+	def _set_id_depth_parent_attrs(parent: Optional['Runnable'], obj: 'Runnable'):
 		obj._set_auto_id()
 		if parent != None:
 			obj.depth = parent.depth + 1
 			obj.parent = parent
 			Attrs(MultiTask.REC_ATTRS).set(parent, obj)
+	def save(self):
+		Runnable.current_instances[self.id] = self
+	@staticmethod
+	def _node_init_setup(parent: Optional['Runnable'], obj: 'Runnable'):
+		Runnable._set_id_depth_parent_attrs(parent, obj)
+		obj.save()
 	@staticmethod
 	def node_init(parent: Optional['Runnable'], obj: 'Runnable'):
-		Runnable._set_id_depth_attrs(parent, obj)
-		log.print(f"{obj.type()} {obj.id} started")
+		Runnable._node_init_setup(parent, obj)
+		obj.print(f"{obj.type()} {obj.id} started")
 		obj.result = ExecutionResult(obj)
 		obj.result.depth = obj.depth
 		obj.start = time.perf_counter()
 		obj._run_single()
+		return obj.result
 	@staticmethod
-	def node_finalize(parent: Optional['Runnable'], obj: 'Runnable') -> bool:
+	def node_finalize(parent: Optional['Runnable'], obj: 'Runnable'):
 		elapsed_time = time.perf_counter() - obj.start
 		obj.result.elapsed_time = elapsed_time
-		log.print(f"{obj.type()} {obj.id} {obj.result.status_msg()} {elapsed_time:.4f}")
+		obj.print(f"{obj.type()} {obj.id} {obj.result.status_msg()} {elapsed_time:.4f}")
 
 		if parent != None:
 			parent.result[obj.id] = obj.result
 			parent.result.elapsed_time += elapsed_time
-		return obj.result.success()
+		return obj.result
 	@staticmethod
 	def node_backward(parent: Optional['Runnable'], obj: 'Runnable'):
 		if parent != None:
@@ -260,7 +287,7 @@ class MultiTask(Runnable):
 		id: Optional[Union[int, str]] = None,
 	):
 		super().__init__(id)
-		self.children = children
+		self.children = list(children)
 	def _set_auto_id(self):
 		if self.id == None:
 			self.id = MultiTask.next_id
@@ -272,9 +299,9 @@ class MultiTask(Runnable):
 		traversal_type: str = "dfs",
 		backward_mode: str = "parent",
 	) -> ExecutionResult:
-		log.print()
-		state = getattr(self, traversal_type)(self._state_config(backward_mode))
-		if state.failed():
+		self.print()
+		result = getattr(self, traversal_type)(self._state_config(backward_mode))
+		if result.exists():
 			self.recursive_backward()
 		return self.result
 class Pipeline(MultiTask):
@@ -340,17 +367,6 @@ if __name__ == "__main__":
 	demo_task_5 = Task(["ls", "afd"])
 	demo_task_6 = Task(["./gradlew", ":composeApp:assembleDebug"])
 
-	def demo_task_7():
-		print("We are in a demo task!")
-		Pipeline(
-			Pipeline(
-				Task(demo_task_1),
-			),
-			Pipeline(
-				Task(demo_task_2),
-				demo_task_3,
-			),
-		)()
 	class PipelineTest(Test):
 		def test1(self):
 			Pipeline(
@@ -367,7 +383,7 @@ if __name__ == "__main__":
 				),
 				Pipeline(
 					Task(demo_task_2),
-					demo_task_3,
+					demo_task_5,
 				),
 			)()
 		def test2(self):
@@ -428,27 +444,49 @@ if __name__ == "__main__":
 
 		def test4(self):
 			def subfunc():
+				print("We are in subfunc!")
 				Pipeline(
 					demo_task_3,
 					Task(demo_task_4),
+					id="a",
 				)()
 				Pipeline(
 					Pipeline(
 						Task(demo_task_1),
 						Task(demo_task_2),
 					),
-					Task(subfunc),
+				)()
+			Pipeline(
+				Pipeline(
+					Task(demo_task_1),
+					Task(demo_task_2),
+				),
+				Task(subfunc),
+			)()
+		def inf_loop(self):
+			def subfunc():
+				print("We are in subfunc!")
+				Pipeline(
+					demo_task_3,
+					Task(demo_task_4),
+					id=31,
 				)()
 				Pipeline(
 					Pipeline(
 						Task(demo_task_1),
-						Task(demo_task_2),
-						id="b",
+						Task(subfunc),
 					),
-					Task(subfunc),
-					id="a"
 				)()
+			Pipeline(
+				Pipeline(
+					Task(demo_task_1),
+					Task(demo_task_2),
+					id="b",
+				),
+				Task(subfunc),
+				id="a"
+			)()
 		def test5(self):
 			Task(demo_task_1)()
 	test=PipelineTest()
-	test.test3()
+	test.test4()

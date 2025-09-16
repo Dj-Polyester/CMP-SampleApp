@@ -2,6 +2,7 @@ from typing import Any, Callable, Optional, Union
 from collections import deque
 from log import log
 from utils import (
+	Result,
 	exists,
 	Attrs,
 	stringify,
@@ -211,7 +212,7 @@ class TraversalState(TraversalUtils, State):
 		),
 	}
 	def print(self):
-		log.debug(self)
+		log.print(log.DEBUG, self)
 	def get_containers(self, *params):
 		_valid_keys = TraversalTypeConfig.keys("valid")
 		_c = self.type_config.container
@@ -281,10 +282,13 @@ class TraversalState(TraversalUtils, State):
 		add_item = self.node if item == Param.DEFAULT else item
 		self._container(container_name).add_single(add_item)
 	def run(self, func_name: str, container_name_parent: str, backward:bool=False):
-		self.success = self._callback(func_name)(
-			self._container(container_name_parent).top(backward),
+		parent_node = self._container(container_name_parent).top(backward)
+		self.result = self._callback(func_name)(
+			parent_node,
 			self.node,
 		)
+		if self.result == None:
+			self.result = Result()
 	def add_children(self):
 		if self.type_config.special_token_before_children:
 			self.add_single("container", self.config.special_token)
@@ -314,7 +318,7 @@ class TraversalState(TraversalUtils, State):
 			self.set_env_vars(**env_vars)
 			self.add_children()
 			self.run("node_init", "parent_container")
-			if self.completed():
+			if self.result.none():
 				self.add_single("parent_container")
 				self.add_single("backtrack_container")
 	def backward_container(self, container_name: str):
@@ -329,7 +333,7 @@ class TraversalState(TraversalUtils, State):
 		for prop in _other_props:
 			if exists(self, prop):
 				_props[prop] = getattr(self, prop)
-		return f"TraverseState({stringify_map(_props)})"
+		return log.repr(f"TraverseState({stringify_map(_props)})")
 class Traversal(TraversalUtils):
 	PRECONFIGS = TraversalState.PRECONFIGS
 	def setup(
@@ -393,8 +397,8 @@ class Traversal(TraversalUtils):
 		while not self.state.container.empty():
 			self.state.forward(**env_vars)
 			self.state.print()
-			if self.state.failed(): break
-		return self.state
+			if self.state.result.exists(): break
+		return self.state.result
 	def recursive_backward(self, backward_mode = Param.DEFAULT):
 		if backward_mode != Param.DEFAULT:
 			self.state.config.backward_mode = backward_mode
@@ -429,7 +433,7 @@ if __name__ == "__main__":
 	def node_init(*args):
 		callbacktxt("node_init", *args)
 		if args[1].id == 6:
-			return False
+			return Result(False)
 	def node_finalize(*args):
 		callbacktxt("node_finalize", *args)
 	def node_backward(*args):
@@ -447,9 +451,9 @@ if __name__ == "__main__":
 				child.parent = self
 		def __repr__(self):
 			return repr(self.id)
-		def backward(self, state: State, **env_vars):
+		def backward(self, res: Result, **env_vars):
 			_print_condition(env_vars, "Backward:")
-			if state.failed():
+			if res.exists():
 				self.recursive_backward()
 		def __call__(self, **env_vars):
 			_print_condition(
@@ -464,7 +468,7 @@ if __name__ == "__main__":
 			**env_vars,
 		):
 			super().__call__(**env_vars)
-			state = getattr(self, _type)(
+			res = getattr(self, _type)(
 				state_config = TraversalStateConfig(
 					node_init = node_init,
 					node_finalize = node_finalize,
@@ -473,7 +477,7 @@ if __name__ == "__main__":
 				),
 				**env_vars,
 			)
-			self.backward(state, **env_vars)
+			self.backward(res, **env_vars)
 
 	class IDummy(Dummy):
 		@staticmethod
@@ -492,13 +496,13 @@ if __name__ == "__main__":
 			**env_vars,
 		):
 			super().__call__(**env_vars)
-			state = getattr(self, _type)(
+			res = getattr(self, _type)(
 				state_config = TraversalStateConfig(
 					backward_mode = backward_mode,
 				),
 				**env_vars,
 			)
-			self.backward(state, **env_vars)
+			self.backward(res, **env_vars)
 
 	class TraversalTest(Test):
 		@staticmethod

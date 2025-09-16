@@ -15,6 +15,17 @@ from typing import (
 )
 from dataclasses import dataclass, field
 
+@dataclass
+class Param:
+	NON_DEFAULT: ClassVar[Any] = ...
+	DEFAULT: ClassVar[Any] = None
+	_type: object = object
+	default: Any = DEFAULT
+	repr: Callable = field(default=lambda x: x, repr=False)
+	def __postinit__(self):
+		if self._type == Callable and self.default == Param.DEFAULT:
+			self.repr = lambda x: x.__name__
+
 class InvalidType(TypeError):
 	"""Raised when a variable has an invalid type"""
 	def __init__(self, varname: str, var, items: Union[Any, Sequence]):
@@ -45,23 +56,20 @@ class Singleton:
 		return cls._instance
 
 @dataclass
-class State:
-	success: Optional[bool]
+class Result:
+	success: Optional[bool] = Param.DEFAULT
+	return_value: Optional[Any] = Param.DEFAULT
 	def completed(self):
-		return not isneg(self.success)
+		return isinstance(self.success, bool) and self.success
 	def failed(self):
-		return isneg(self.success)
-
+		return isinstance(self.success, bool) and not self.success
+	def exists(self):
+		return isinstance(self.success, bool)
+	def none(self):
+		return not exists(self, "success")
 @dataclass
-class Param:
-	NON_DEFAULT: ClassVar[Any] = ...
-	DEFAULT: ClassVar[Any] = None
-	_type: object = object
-	default: Any = DEFAULT
-	repr: Callable = field(default=lambda x: x, repr=False)
-	def __postinit__(self):
-		if self._type == Callable and self.default == Param.DEFAULT:
-			self.repr = lambda x: x.__name__
+class State:
+	result: Optional[Result] = Param.DEFAULT
 
 class Config:
 	PROPERTIES = (
@@ -214,6 +222,18 @@ class Attrs:
 		self.condition_name = condition_name
 		self.condition_val = condition_val
 		return self
+	def _with_notnone(
+		self,
+		callback_name: Callable = lambda x: x,
+		callback_val: Callable = lambda x: x,
+	):
+		return self._with(
+			self.iterable,
+			callback_name,
+			callback_val,
+			condition_name = lambda name: exists(self, name),
+			condition_val = lambda val: val != Param.DEFAULT,
+		)
 	def _helper_iter(
 		self,
 		src: Union[Any, Collection],
@@ -228,7 +248,7 @@ class Attrs:
 		return (
 			obj.__getitem__(name)
 			if isinstance(obj, Mapping)
-			else obj.__getattribute__(name)
+			else object.__getattribute__(obj, name)
 		)
 	@staticmethod
 	def setitem(obj: Any, name: str, value: Any):
@@ -282,6 +302,17 @@ class Attrs:
 			src_val = self.src_getfunc(self.callback_name(name))
 			if self.condition_val(src_val):
 				self.dst_setfunc(name, self.callback_val(src_val))
+	def get_notnone(
+		self,
+		src: Any,
+	):
+		return self._with_notnone().get(src)
+	def set_notnone(
+		self,
+		src: Any,
+		dst: Any,
+	):
+		return self._with_notnone().set(src, dst)
 	def has(
 		self,
 		obj: Union[Any, Container],
@@ -374,8 +405,8 @@ def exists(obj: Any, name: str) -> bool:
 	"""
 	attr = None
 	try:
-		attr = object.__getattribute__(obj, name)
-	except AttributeError:
+		attr = Attrs.getitem(obj, name)
+	except (AttributeError, KeyError):
 		pass
 	return attr != None
 def tabbed_print(depth: int, *args, **kwargs):

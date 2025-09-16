@@ -1,24 +1,32 @@
 import logging
-from utils import Singleton, exists
+import reprlib
+from utils import Param, Singleton, exists
 class Log(Singleton):
 	"""
 	Wrapper around `logging` package
 	"""
-	VERBOSE_LEVEL = logging.DEBUG
-	SILENT_LEVEL = logging.INFO
-	def __init__(self):
+	VERBOSE = logging.INFO
+	SILENT = logging.WARNING
+	def __init__(self, shorten = False):
 		logging.basicConfig(
-    		level=logging.INFO,                     # Set minimum log level
+    		level=self.INFO,                     # Set minimum log level
     		format="%(asctime)s - %(levelname)s - %(message)s"
 		)
+		self.shorten = shorten
 		self._logger = logging.getLogger()
-	def verbose(self) -> bool:
-		return self.getEffectiveLevel() <= self.VERBOSE_LEVEL
+	def level(self, _level) -> bool:
+		return self.getEffectiveLevel() <= _level
+	def verbose(self):
+		return self.level(self.VERBOSE)
 	def set_verbosity(self, val:bool = True):
-		self._logger.setLevel(self.VERBOSE_LEVEL if val else self.SILENT_LEVEL)
-	def print(self,*args, **kwargs):
-		if self.verbose():
+		self._logger.setLevel(self.VERBOSE if val else self.SILENT)
+	def print(self,_level, *args, **kwargs):
+		if self.level(_level):
 			print(*args, **kwargs)
+	def repr(self, _repr: str):
+		if self.shorten and self.level(self.DEBUG):
+			_repr = reprlib.repr(_repr)
+		return _repr
 	def __getattr__(self, name: str):
 		if exists(logging, name):
 			return getattr(logging, name)
