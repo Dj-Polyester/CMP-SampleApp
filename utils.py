@@ -36,6 +36,14 @@ class InvalidAttr(AttributeError):
 			f"Object of type {type(var).__name__} should have {stringify(items, and_or)} "
 			f"as method or property"
 		)
+
+class Singleton:
+	_instance = None
+	def __new__(cls, *args, **kwargs):
+		if not cls._instance:  # If no instance exists
+			cls._instance = super().__new__(cls)
+		return cls._instance
+
 @dataclass
 class State:
 	success: Optional[bool]

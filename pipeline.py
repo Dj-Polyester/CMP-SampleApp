@@ -1,9 +1,10 @@
 import time, subprocess, reprlib, inspect, multiprocessing as mp
 from typing import Callable, Union, Iterable, Optional, Sequence
 from dataclasses import dataclass
-from traverse import Traversal, TraversalStateConfig
+from traversal import Traversal, TraversalStateConfig
 from utils import InvalidType, exists, tabbed_print, Attrs
 from test import Test
+from log import log
 
 @dataclass
 class ExecutionException:
@@ -32,7 +33,11 @@ class ExecutionResult(Traversal):
 		title_txt = f"{obj.runnable.type()} {runnable_id}"
 		time_txt = f" time: {obj.elapsed_time:.4f}"
 		if exists(obj, "return_value"):
-			retval_repr = obj.return_value if obj.runnable.verbose else reprlib.repr(obj.return_value)
+			retval_repr = (
+				reprlib.repr(obj.return_value)
+				if log.verbose()
+				else obj.return_value
+			)
 			retval_txt = f" return: {retval_repr}"
 		else:
 			retval_txt = ""
@@ -86,15 +91,13 @@ class Runnable(Traversal):
 	def __init__(
 		self,
 		id: Optional[Union[int, str]] = None,
-		verbose:bool = False,
 	):
 		self._setattrs(
 			id=id,
 			depth=0,
-			verbose=verbose,
 		)
 	def __repr__(self):
-		return f"{self.type()}(id={self.id}, depth={self.depth}, verbose={self.verbose})"
+		return f"{self.type()}(id={self.id}, depth={self.depth})"
 	def _setattrs(self, **attrs):
 		for name, val in attrs.items():
 			setattr(self, name, val)
@@ -134,7 +137,7 @@ class Runnable(Traversal):
 					break
 		return runnable, multitask_runnable
 	def print(self, *args, **kwargs):
-		if self.verbose:
+		if log.verbose():
 			tabbed_print(self.depth, *args, **kwargs)
 	def run(self) -> ExecutionResult:
 		raise NotImplementedError()
@@ -160,7 +163,7 @@ class Runnable(Traversal):
 	@staticmethod
 	def node_init(parent: Optional['Runnable'], obj: 'Runnable'):
 		Runnable._set_id_depth_attrs(parent, obj)
-		obj.print(f"{obj.type()} {obj.id} started")
+		log.print(f"{obj.type()} {obj.id} started")
 		obj.result = ExecutionResult(obj)
 		obj.result.depth = obj.depth
 		obj.start = time.perf_counter()
@@ -169,7 +172,7 @@ class Runnable(Traversal):
 	def node_finalize(parent: Optional['Runnable'], obj: 'Runnable') -> bool:
 		elapsed_time = time.perf_counter() - obj.start
 		obj.result.elapsed_time = elapsed_time
-		obj.print(f"{obj.type()} {obj.id} {obj.result.status_msg()} {elapsed_time:.4f}")
+		log.print(f"{obj.type()} {obj.id} {obj.result.status_msg()} {elapsed_time:.4f}")
 
 		if parent != None:
 			parent.result[obj.id] = obj.result
@@ -188,7 +191,6 @@ class Task(Runnable):
 		self,
 		cmd: Union[Callable, list, str],
 		*args,
-		verbose=False,
 		id: Optional[Union[int,str]]=None,
 		**kwargs,
 	):
@@ -208,7 +210,7 @@ class Task(Runnable):
 			else:
 				raise TypeError(f"Command has wrong type {type(cmd)}")
 		self.kwargs = kwargs
-		super().__init__(id, verbose)
+		super().__init__(id)
 	def _set_auto_id(self):
 		pass
 	def set_shell(self):
@@ -250,17 +252,14 @@ class Task(Runnable):
 
 class MultiTask(Runnable):
 	next_id = 1
-	REC_ATTRS = [
-		"verbose",
-	]
+	REC_ATTRS = []
 	'''Runnable with multiple runnables'''
 	def __init__(
 		self,
 		*children: Runnable,
 		id: Optional[Union[int, str]] = None,
-		verbose=False,
 	):
-		super().__init__(id, verbose)
+		super().__init__(id)
 		self.children = children
 	def _set_auto_id(self):
 		if self.id == None:
@@ -273,8 +272,7 @@ class MultiTask(Runnable):
 		traversal_type: str = "dfs",
 		backward_mode: str = "parent",
 	) -> ExecutionResult:
-		if self.verbose:
-			print()
+		log.print()
 		state = getattr(self, traversal_type)(self._state_config(backward_mode))
 		if state.failed():
 			self.recursive_backward()
@@ -285,24 +283,25 @@ class Pipeline(MultiTask):
 		self,
 		*children: Runnable,
 		id: Optional[Union[int, str]] = None,
-		verbose=False,
 	):
-		super().__init__(*children, id=id, verbose=verbose)
+		super().__init__(*children, id=id)
 	def _state_config(self, backward_mode):
 		return TraversalStateConfig(
 			backward_mode = backward_mode,
 		)
 
 class Multiplexer(Pipeline):
-	'''Chooses number of its runnables given an indexing parameter. When the index is boolean, True becomes 0 and vice-versa'''
+	"""
+	Chooses number of its runnables given an indexing parameter.
+	When the index is boolean, True becomes 0 and vice-versa
+	"""
 	def __init__(
 		self,
 		index: Union[bool, int, Iterable[int]],
 		*children: Union['Pipeline', Task],
 		id: Optional[Union[int, str]] = None,
-		verbose=False,
 	):
-		super().__init__(*children, id=id, verbose=verbose)
+		super().__init__(*children, id=id)
 		self.set_conditions(index)
 	def set_conditions(self, index):
 		if isinstance(index, bool):
@@ -340,6 +339,18 @@ if __name__ == "__main__":
 
 	demo_task_5 = Task(["ls", "afd"])
 	demo_task_6 = Task(["./gradlew", ":composeApp:assembleDebug"])
+
+	def demo_task_7():
+		print("We are in a demo task!")
+		Pipeline(
+			Pipeline(
+				Task(demo_task_1),
+			),
+			Pipeline(
+				Task(demo_task_2),
+				demo_task_3,
+			),
+		)()
 	class PipelineTest(Test):
 		def test1(self):
 			Pipeline(
@@ -349,7 +360,6 @@ if __name__ == "__main__":
 				),
 				demo_task_3,
 				Task(demo_task_4),
-				verbose=True,
 			)()
 			Pipeline(
 				Pipeline(
@@ -359,7 +369,6 @@ if __name__ == "__main__":
 					Task(demo_task_2),
 					demo_task_3,
 				),
-				verbose=True,
 			)()
 		def test2(self):
 			Pipeline(
@@ -389,7 +398,6 @@ if __name__ == "__main__":
 					),
 				),
 				Task(demo_task_4),
-				verbose=True,
 			)()
 		def test3(self):
 			Multiplexer(
@@ -404,7 +412,6 @@ if __name__ == "__main__":
 				Pipeline(
 					Task(demo_task_4),
 				),
-				verbose=True,
 			)()
 			Multiplexer(
 				True,
@@ -431,7 +438,6 @@ if __name__ == "__main__":
 						Task(demo_task_2),
 					),
 					Task(subfunc),
-					verbose=True,
 				)()
 				Pipeline(
 					Pipeline(
@@ -440,7 +446,6 @@ if __name__ == "__main__":
 						id="b",
 					),
 					Task(subfunc),
-					verbose=True,
 					id="a"
 				)()
 		def test5(self):

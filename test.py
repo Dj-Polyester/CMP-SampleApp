@@ -1,6 +1,6 @@
 from typing import Callable, Iterable, Union, Optional, Any, Mapping
 from types import FunctionType, MethodType
-from utils import exists, product_dict
+from utils import Singleton, exists, product_dict
 
 def ret_callable(
 	attr: Union[FunctionType, MethodType],
@@ -20,17 +20,11 @@ def ret_callable(
 		if postfix != None:
 			postfix(**postfix_kwargs)
 	return _newcall
-class Test:
+class Test(Singleton):
 	"""
 	A singleton class for unit tests.
 	A single call runs every public method name of which does not start with `_`
 	"""
-	_instance = None
-	def __new__(cls, *args, **kwargs):
-		if not cls._instance:  # If no instance exists
-			cls._instance = super().__new__(cls)
-		return cls._instance
-
 	def __init__(self):
 		self._setup()
 
@@ -81,6 +75,7 @@ class Test:
 		)
 
 if __name__ == "__main__":
+	class TestDummy2(Test):pass
 	class TestDummy(Test):
 		def a(self):
 			print(f"in a")
@@ -101,5 +96,7 @@ if __name__ == "__main__":
 	t1 = TestDummy()
 	t1()
 	t2 = TestDummy()
+	t3 = TestDummy2()
 	assert t1 == t2
+	assert t1 == t3
 	t2()

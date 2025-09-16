@@ -1,5 +1,6 @@
 from typing import Any, Callable, Optional, Union
 from collections import deque
+from log import log
 from utils import (
 	exists,
 	Attrs,
@@ -13,7 +14,6 @@ from utils import (
 	InvalidVal,
 	InvalidAttr,
 	TraversalUtils,
-	xnor,
 )
 from test import Test
 
@@ -86,7 +86,6 @@ class TraversalStateConfig(Config):
 		uses `backtrack_container` and `parent_container` respectively. "parent_pointer"
 		looks for a `parent` property for each node
 		and follows the path until the property cannot be found.
-		`verbose (bool)`: Verbosity
 
 		The following fields are name of the callback methods for specific purposes
 
@@ -100,7 +99,6 @@ class TraversalStateConfig(Config):
 		"special_token": Param(default = Param.NON_DEFAULT),
 		"backward_mode": Param(str, "backtrace"),
 		"proc_children": Param(Callable, lambda x: x),
-		"verbose": Param(bool, False),
 	}
 	VALID_PARAMS = {
 		"init": Param(
@@ -212,6 +210,8 @@ class TraversalState(TraversalUtils, State):
 			container = "stack",
 		),
 	}
+	def print(self):
+		log.debug(self)
 	def get_containers(self, *params):
 		_valid_keys = TraversalTypeConfig.keys("valid")
 		_c = self.type_config.container
@@ -320,13 +320,9 @@ class TraversalState(TraversalUtils, State):
 	def backward_container(self, container_name: str):
 		self.run("node_backward", container_name, True)
 		self.pop(container_name, True)
-
 	def backward_parent(self):
 		self.config.node_backward(self.node.parent, self.node)
 		self.node = self.node.parent
-	def print(self):
-		if exists(self, "verbose") and self.verbose:
-			print(self)
 	def __repr__(self):
 		_props = self.props(self.type_config, "valid")
 		_other_props = ["success", "node"]
