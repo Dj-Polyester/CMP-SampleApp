@@ -1,6 +1,6 @@
 from typing import Callable, Iterable, Union, Optional, Any, Mapping
 from types import FunctionType, MethodType
-from utils import Singleton, exists, product_dict
+from utils import Attrs, Singleton, product_dict
 
 def ret_callable(
 	attr: Union[FunctionType, MethodType],
@@ -41,7 +41,7 @@ class Test(Singleton):
 		)
 
 	def _setup(self):
-		if not exists(self, "_initialized"):
+		if not Attrs.has(self, "_initialized"):
 			self._initialized = True
 			self._forallattrs(self._modifyattr)
 

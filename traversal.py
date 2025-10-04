@@ -3,11 +3,9 @@ from collections import deque
 from log import log
 from utils import (
 	Result,
-	exists,
 	Attrs,
 	stringify,
 	stringify_map,
-	status_msg,
 	Config,
 	Param,
 	State,
@@ -37,7 +35,6 @@ class TraversalContainerConfig(Config):
 	}
 	VALID_PARAMS = {
 		"pop": Param(str),
-		"pop_backward": Param(str, "pop"),
 		"add_single": Param(str, "append"),
 		"add_multiple": Param(str, "extend"),
 	}
@@ -185,16 +182,19 @@ class TraversalContainer(TraversalUtils):
 		return container
 	def empty(self):
 		return not self._container
-	def top(self, backward: bool = False):
+	def __getitem__(self, index: int):
+		return self._container[index] if self._container else Param.DEFAULT
+	def top(self):
+		return self[self.config.top_index]
+	def bottom(self):
 		ti = self.config.top_index
-		if self.reverse and backward:
-			if ti == 0:
-				ti = -1
-			elif ti == -1:
-				ti = 0
-			else:
-				raise InvalidVal("top_index", ti, (0,-1))
-		return self._container[ti] if self._container else Param.DEFAULT
+		if ti == 0:
+			ti = -1
+		elif ti == -1:
+			ti = 0
+		else:
+			raise InvalidVal("top_index", ti, (0,-1))
+		return self[ti]
 	def __repr__(self):
 		return repr(self._container)
 
@@ -212,7 +212,7 @@ class TraversalState(TraversalUtils, State):
 		),
 	}
 	def print(self):
-		log.print(log.DEBUG, self)
+		log.print(self, _level = log.DEBUG)
 	def get_containers(self, *params):
 		_valid_keys = TraversalTypeConfig.keys("valid")
 		_c = self.type_config.container
@@ -256,6 +256,7 @@ class TraversalState(TraversalUtils, State):
 			self,
 			_return = False,
 		)
+		self.containers = containers
 	def setup(
 		self,
 		config: Optional[TraversalStateConfig] = Param.DEFAULT,
@@ -270,68 +271,70 @@ class TraversalState(TraversalUtils, State):
 		# Containers
 		if containers != {}:
 			self.set_containers(**containers)
-
 	def _container(self, name: str):
 		return getattr(self, name)
 	def _callback(self, name: str):
 		return getattr(self.config, name)
-	def pop(self, container_name: str, backward:bool=False):
-		popop = "pop_backward" if backward else "pop"
-		self.node = getattr(self._container(container_name), popop)()
-	def add_single(self, container_name: str, item: Optional[Any] = Param.DEFAULT):
-		add_item = self.node if item == Param.DEFAULT else item
-		self._container(container_name).add_single(add_item)
-	def run(self, func_name: str, container_name_parent: str, backward:bool=False):
-		parent_node = self._container(container_name_parent).top(backward)
-		self.result = self._callback(func_name)(
+	def run(self, func_name: str, container_name_parent: str):
+		parent_node = self._container(container_name_parent).top()
+		callback_ret = self._callback(func_name)(
 			parent_node,
 			self.node,
 		)
-		if self.result == None:
+		if isinstance(callback_ret, Result):
+			self.result = callback_ret
+		else:
 			self.result = Result()
+			self.result.set_code(callback_ret)
+		return self.result
 	def add_children(self):
 		if self.type_config.special_token_before_children:
-			self.add_single("container", self.config.special_token)
-		if exists(self.node, "children"):
+			self.container.add_single(self.config.special_token)
+		if Attrs.has(self.node, "children"):
 			children = self.node.children
 			if isinstance(children, dict):
 				children = children.values()
+
+			if (
+				Attrs.has(self.node, "proc_children") and
+				isinstance(self.node.proc_children, Callable)
+			):
+				children = self.node.proc_children(children)
 			self.container.add_multiple(
-				self.type_config.proc_children(
-					self.config.proc_children(children)
-				)
+				self.type_config.proc_children(children)
 			)
 		if not self.type_config.special_token_before_children:
-			self.add_single("container", self.config.special_token)
+			self.container.add_single(self.config.special_token)
 	def set_env_vars(self, **env_vars):
 		Attrs().set_check(
 			env_vars,
 			self.node,
 			_return = False,
 		)
+		self.env_vars = env_vars
 	def forward(self, **env_vars):
-		self.pop("container")
+		self.node = self.container.pop()
 		if self.node == self.config.special_token: # Processed all children
-			self.pop("parent_container")
+			self.node = self.parent_container.pop()
 			self.run("node_finalize", "parent_container")
 		else:
 			self.set_env_vars(**env_vars)
 			self.add_children()
 			self.run("node_init", "parent_container")
 			if self.result.none():
-				self.add_single("parent_container")
-				self.add_single("backtrack_container")
+				self.parent_container.add_single(self.node)
+				self.backtrack_container.add_single(self.node)
 	def backward_container(self, container_name: str):
-		self.run("node_backward", container_name, True)
-		self.pop(container_name, True)
+		self.run("node_backward", container_name)
+		self.node = self._container(container_name).pop()
 	def backward_parent(self):
 		self.config.node_backward(self.node.parent, self.node)
 		self.node = self.node.parent
 	def __repr__(self):
 		_props = self.props(self.type_config, "valid")
-		_other_props = ["success", "node"]
+		_other_props = ["result", "node"]
 		for prop in _other_props:
-			if exists(self, prop):
+			if Attrs.has(self, prop):
 				_props[prop] = getattr(self, prop)
 		return log.repr(f"TraverseState({stringify_map(_props)})")
 class Traversal(TraversalUtils):
@@ -347,12 +350,12 @@ class Traversal(TraversalUtils):
 		_valid_defaults = state_config.defaults("valid")
 		attrs = Attrs(
 			_valid_defaults.keys(),
-			condition_name = lambda x: exists(state_config, x),
+			condition_name = lambda x: Attrs.has(state_config, x),
 		)
 		_valid_props = attrs.get(state_config)
 		_self_props = attrs._with(
 			_valid_defaults.keys(),
-			condition_name = lambda x: exists(self, x),
+			condition_name = lambda x: Attrs.has(self, x),
 			condition_val = lambda x: x != Param.DEFAULT,
 		).get(self)
 		_all_valid = {**_valid_defaults, **_valid_props, **_self_props}
@@ -377,7 +380,7 @@ class Traversal(TraversalUtils):
 					**env_vars,
 				)
 			return _recursive
-		elif exists(self, "state"):
+		elif Attrs.has(self, "state"):
 			return getattr(self.state, name)
 		else:
 			raise InvalidAttr(self, name)
@@ -392,28 +395,30 @@ class Traversal(TraversalUtils):
 		if obj == Param.DEFAULT:
 			obj = self
 
-		self.state.set_containers([obj])
-		self.state.print()
-		while not self.state.container.empty():
-			self.state.forward(**env_vars)
-			self.state.print()
-			if self.state.result.exists(): break
-		return self.state.result
+		self.set_containers([obj])
+		self.print()
+		while not self.container.empty():
+			self.forward(**env_vars)
+			self.print()
+			if self.result.exists():
+				break
+		return self.result
 	def recursive_backward(self, backward_mode = Param.DEFAULT):
 		if backward_mode != Param.DEFAULT:
 			self.state.config.backward_mode = backward_mode
-		self.state.print()
-		is_container, bm = self.state.config.backward_container()
+		self.print()
+		is_container, bm_container_name = self.state.config.backward_container()
 		if is_container:
-			while not getattr(self.state, bm).empty():
-				self.state.backward_container(bm)
-				self.state.print()
+			while not getattr(self.state, bm_container_name).empty():
+				self.backward_container(bm_container_name)
+				self.print()
 		elif self.state.config.backward_mode == "parent_pointer":
-			while exists(self.state.node, "parent"):
-				self.state.backward_parent()
-				self.state.print()
+			while Attrs.has(self.state.node, "parent"):
+				self.backward_parent()
+				self.print()
+		if is_container or self.state.config.backward_mode == "parent_pointer":
 			self.config.node_backward(Param.DEFAULT, self.node)
-			self.state.print()
+			self.print()
 		else:
 			raise InvalidVal(
 				"Backward mode",
@@ -433,7 +438,7 @@ if __name__ == "__main__":
 	def node_init(*args):
 		callbacktxt("node_init", *args)
 		if args[1].id == 6:
-			return Result(False)
+			return False
 	def node_finalize(*args):
 		callbacktxt("node_finalize", *args)
 	def node_backward(*args):
@@ -586,7 +591,7 @@ Container after popping {container.pop()}: {container}
 			def _callback_outer(buffer_txts):
 				is_equal = buffer_txts[0] == buffer_txts[1]
 				print(
-					f"{stringify(cls_names)} {status_msg(int(not is_equal))}"
+					f"{stringify(cls_names)} {Result(int(not is_equal)).status_msg()}"
 				)
 				if _assert:
 					assert is_equal
@@ -596,5 +601,6 @@ Container after popping {container.pop()}: {container}
 				_callback_inner,
 				_callback_outer,
 			)
+	#log.setLevel(log.DEBUG)
 	test=TraversalTest()
 	test.compare_implementations()

@@ -14,6 +14,7 @@ from typing import (
 	KeysView,
 )
 from dataclasses import dataclass, field
+import sys
 
 @dataclass
 class Param:
@@ -34,14 +35,14 @@ class InvalidType(TypeError):
 			f"but has type {type(var)}"
 		)
 class InvalidVal(ValueError):
-	"""Raised when a variable has an invalid type"""
+	"""Raised when a variable has an invalid value"""
 	def __init__(self, varname: str, var, items: Union[Any, Sequence]):
 		super().__init__(
 			f"The {varname} has to be {stringify(items, 'or')} "
 			f"but is {var}"
 		)
 class InvalidAttr(AttributeError):
-	"""Raised when a variable has an invalid type"""
+	"""Raised when a variable has an invalid attribute"""
 	def __init__(self, var: Any, items: Union[Any, Sequence], and_or: str = ","):
 		super().__init__(
 			f"Object of type {type(var).__name__} should have {stringify(items, and_or)} "
@@ -54,19 +55,54 @@ class Singleton:
 		if not cls._instance:  # If no instance exists
 			cls._instance = super().__new__(cls)
 		return cls._instance
+@dataclass
+class Status:
+	txt: str
+	logo: str
+	e: type = Param.DEFAULT
 
 @dataclass
 class Result:
-	success: Optional[bool] = Param.DEFAULT
+	STATUS: ClassVar = [
+		Status("done", "✓"),
+		Status("failed", "✗"),
+		Status("interrupted", "⚠", KeyboardInterrupt),
+	]
+	code: int = -1
 	return_value: Optional[Any] = Param.DEFAULT
+	def set_code(self, e: Optional[Union[BaseException, bool, int]] = Param.DEFAULT):
+		if isinstance(e, bool):
+			self.code = int(not e)
+		elif isinstance(e, int):
+			lenst = len(self.STATUS)
+			if e >= lenst:
+				raise InvalidVal("Result code", e, tuple(range(lenst)))
+			self.code = e
+		elif isinstance(e, KeyboardInterrupt):
+			self.code = 2
+		elif isinstance(e, BaseException):
+			self.code = 1
+		elif e != None:
+			self.code = 0
 	def completed(self):
-		return isinstance(self.success, bool) and self.success
+		return self.code == 0
 	def failed(self):
-		return isinstance(self.success, bool) and not self.success
+		return self.code == 1
+	def interrupted(self):
+		return self.code == 2
 	def exists(self):
-		return isinstance(self.success, bool)
+		return self.code != -1
 	def none(self):
-		return not exists(self, "success")
+		return self.code == -1
+	def status_msg(self, code: Optional[int] = Param.DEFAULT):
+		if code == Param.DEFAULT:
+			code = self.code
+		try:
+			status = Result.STATUS[code]
+		except IndexError:
+			raise ValueError(f"Invalid status {code}")
+		return f"{status.txt} {status.logo}"
+
 @dataclass
 class State:
 	result: Optional[Result] = Param.DEFAULT
@@ -166,14 +202,14 @@ class TraversalUtils:
 	def set_configs(self, config: StrConfNone = Param.DEFAULT, **configs: StrConfNone):
 		if config != Param.DEFAULT:
 			configs["config"] = config
-		def set_config(config: StrConfNone):
+		def get_config(config: StrConfNone):
 			if isinstance(config, str):
 				return self.PRECONFIGS[config]
 			elif isinstance(config, Config):
 				return config
-			elif not exists(self, "config"):
+			elif not Attrs.has(self, "config"):
 				raise InvalidType("Config", config, (str, Config))
-		Attrs(callback_val = set_config).set(configs, self)
+		Attrs(callback_val = get_config).set(configs, self)
 		pass
 	def props(self, config: Config, *args, **kwargs):
 		return {
@@ -231,7 +267,7 @@ class Attrs:
 			self.iterable,
 			callback_name,
 			callback_val,
-			condition_name = lambda name: exists(self, name),
+			condition_name = lambda name: Attrs.has(self, name),
 			condition_val = lambda val: val != Param.DEFAULT,
 		)
 	def _helper_iter(
@@ -244,12 +280,23 @@ class Attrs:
 			else:
 				raise TypeError(f"src parameter of type {type(src)} should be 'Collection'")
 	@staticmethod
-	def getitem(obj: Any, name: str):
+	def _getitem(obj: Any, name: str):
 		return (
 			obj.__getitem__(name)
 			if isinstance(obj, Mapping)
 			else object.__getattribute__(obj, name)
 		)
+	@staticmethod
+	def getitem(obj: Any, name: str, _return = False):
+		attr = None
+		try:
+			attr = Attrs._getitem(obj, name)
+		except (AttributeError, KeyError) as e:
+			if not _return:
+				print(e)
+				sys.exit(1)
+			return Param.DEFAULT
+		return attr
 	@staticmethod
 	def setitem(obj: Any, name: str, value: Any):
 		(
@@ -257,7 +304,16 @@ class Attrs:
 			if isinstance(obj, MutableMapping)
 			else obj.__setattr__(name, value)
 		)
-
+	@staticmethod
+	def has(obj: Any, name: str) -> bool:
+		"""
+		Check if obj has attr with `name`.
+		Evaluates to the same operation as below expression
+		except it uses object.__getattribute__ to avoid recursion.
+		`return hasattr(obj, name) and getattr(obj, name) != None`
+		"""
+		attr = Attrs.getitem(obj, name, _return = True)
+		return attr != None
 	def _helper_getfunc(
 		self,
 		src: Union[Any, Collection],
@@ -270,7 +326,7 @@ class Attrs:
 				else:
 					return Param.DEFAULT
 			return _getfunc
-		self.src_getfunc = getfunc(src)
+		self._src_getfunc = getfunc(src)
 	def get(
 		self,
 		src: Any,
@@ -281,7 +337,7 @@ class Attrs:
 		self._helper_getfunc(src)
 		def _attr_gen():
 			for name in self.iterable:
-				src_val = self.src_getfunc(self.callback_name(name))
+				src_val = self._src_getfunc(self.callback_name(name))
 				if self.condition_val(src_val):
 					yield name, self.callback_val(src_val)
 		return {k:v for k, v in _attr_gen()}
@@ -297,11 +353,11 @@ class Attrs:
 		self._helper_getfunc(src)
 		def setfunc(obj: Any):
 			return lambda name, val: Attrs.setitem(obj, name, val)
-		self.dst_setfunc = setfunc(dst)
+		self._dst_setfunc = setfunc(dst)
 		for name in self.iterable:
-			src_val = self.src_getfunc(self.callback_name(name))
+			src_val = self._src_getfunc(self.callback_name(name))
 			if self.condition_val(src_val):
-				self.dst_setfunc(name, self.callback_val(src_val))
+				self._dst_setfunc(name, self.callback_val(src_val))
 	def get_notnone(
 		self,
 		src: Any,
@@ -313,18 +369,15 @@ class Attrs:
 		dst: Any,
 	):
 		return self._with_notnone().set(src, dst)
-	def has(
+	def has_all_any(
 		self,
 		obj: Union[Any, Container],
-		attrs: Optional[Iterable] = Param.DEFAULT,
 		all_any: Union[str, bool] = "all",
 		_return = True,
 	):
 		"""
-		Checks if `obj` has `attrs`. if `attrs` is `None`, `iterable` is provided.
+		Checks if `obj` has all atrributes in its `iterable` property.
 		"""
-		if attrs == Param.DEFAULT:
-			attrs = self.iterable
 		if all_any == "all":
 			all_any = True
 		elif all_any == "any":
@@ -332,60 +385,30 @@ class Attrs:
 		elif not isinstance(all_any, bool):
 			raise InvalidType("all_any", all_any, ("all", "any"))
 		_hasattrs = all_any
-		def _break_condition(_bool):
-			nonlocal _hasattrs
-			if _bool:
-				_hasattrs = not _hasattrs
-				return True
-			return False
-		def _break_condition_obj(attr):
-			return _break_condition(
-				(all_any and not exists(obj, attr)) or #all
-				(not all_any and exists(obj, attr)) #any
-			)
-		def _break_condition_container(attr):
-			return _break_condition(
-				(all_any and attr not in obj) or #all
-				(not all_any and attr in obj) #any
-			)
 		def break_condition(attr):
-			if isinstance(obj, Container):
-				if _break_condition_container(attr):
-					return True
-			elif _break_condition_obj(attr):
-				return True
-			return False
-		for attr in attrs:
+			return (
+				(all_any and not Attrs.has(obj, attr)) or #all
+				(not all_any and Attrs.has(obj, attr)) #any
+			)
+		for attr in self.iterable:
 			if break_condition(attr):
 				break
 		if _return:
 			return _hasattrs
 		if not _hasattrs:
-			raise InvalidAttr(obj, attrs, "and" if all_any else "or")
+			raise InvalidAttr(obj, self.iterable, "and" if all_any else "or")
 	def set_check(
 		self,
 		src: Union[Any, Collection],
 		dst: Any,
-		*has_args, **has_kwargs,
+		*has_args,
+		**has_kwargs,
 	):
 		"""
 		Checks to see if the elements copied successfully.
 		"""
 		self.set(src, dst)
-		self.has(dst, *has_args, **has_kwargs)
-
-
-STATUS = [
-	"✓",
-	"✗",
-	"⚠",
-]
-
-def status_msg(code: int):
-	try:
-		return STATUS[code]
-	except IndexError:
-		raise ValueError(f"Invalid status {code}")
+		self.has_all_any(dst, *has_args, **has_kwargs)
 
 def stringify_map(map: Mapping):
 	return stringify([f"{k}={v}" for k, v in map.items()])
@@ -396,19 +419,7 @@ def stringify(items: Union[Any, Sequence], and_or: str = ","):
 	return ", ".join(items[:-1]) + f"{and_or_str}{items[-1]}"
 def isneg(res):
 	return isinstance(res, bool) and not res
-def exists(obj: Any, name: str) -> bool:
-	"""
-	Check if obj has attr with `name`.
-	Evaluates to the same operation as below expression
-	except it uses object.__getattribute__ to avoid recursion.
-	`return hasattr(obj, name) and getattr(obj, name) != None`
-	"""
-	attr = None
-	try:
-		attr = Attrs.getitem(obj, name)
-	except (AttributeError, KeyError):
-		pass
-	return attr != None
+
 def tabbed_print(depth: int, *args, **kwargs):
 	print("\t".expandtabs(4)*depth, *args, **kwargs)
 def xnor(a:bool,b:bool):
