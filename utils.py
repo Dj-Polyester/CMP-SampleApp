@@ -94,6 +94,8 @@ class Result:
 		return self.code != -1
 	def none(self):
 		return self.code == -1
+	def break_condition(self):
+		return self.exists()
 	def status_msg(self, code: Optional[int] = Param.DEFAULT):
 		if code == Param.DEFAULT:
 			code = self.code
@@ -115,12 +117,9 @@ class Config:
 	VALID_PARAMS: Mapping[str, Param] = {}
 	SUBSTR: str = ""
 	def __init__(self, **kwargs):
-		self._params = self.params()
-		self._defaults = {
-			k: v.default
-			for k, v in self._params.items() if v.default != Param.DEFAULT
-		}
-		self._props = {**self._defaults, **kwargs}
+		_default_props = self.default_props()
+		_common_props = self.common_props(common_kwargs=kwargs)
+		self._props = {**_default_props, **_common_props}
 		self._check_type()
 		Attrs().set_check(
 			self._props,
@@ -151,45 +150,112 @@ class Config:
 		s1: Optional[str] = Param.DEFAULT,
 		s2: Optional[str] = Param.DEFAULT,
 		reverse: bool = False,
-		delim: str = "_",
-		char: str = "",
 	) -> str:
 		if s1 == Param.DEFAULT: s1 = cls.SUBSTR
 		if s2 == Param.DEFAULT: s2 = cls.SUBSTR
-		_str = f"{s1}{delim}{s2}" if not reverse else f"{s2}{delim}{s1}"
-		return s2 if s1==char else _str
-	def props(self, *args, **kwargs):
-		return {
-			k: getattr(self, k) for k in self.params(*args, **kwargs).keys()
-		}
-	def defaults(self, *args, **kwargs):
-		return {
-			k: v.default
-			for k, v in self.params(*args, **kwargs).items()
-			if v.default != Param.DEFAULT
-		}
-	@classmethod
-	def params(
-		cls,
+		return add_str(
+			s1,
+			s2,
+			reverse,
+		)
+	def default_params(self, *args, **kwargs):
+		return self.params(_subtype = "default", *args, **kwargs)
+	def common_params(self, *args, **kwargs):
+		return self.params(_subtype = "common", *args, **kwargs)
+	def default_props(self, *args, **kwargs):
+		return self.props(_subtype = "default", *args, **kwargs)
+	def common_props(self, *args, **kwargs):
+		return self.props(_subtype = "common", *args, **kwargs)
+	def vars(
+		self,
+		_basename: str,
 		_type: str = "all",
-	) -> Mapping[str, Param]:
+		_subtype: str = "",
+		common_kwargs: Optional[Mapping] = Param.DEFAULT,
+		var_callback: Callable = Param.DEFAULT,
+	):
+		if var_callback == Param.DEFAULT:
+			var_callback = Attrs.getitem(self, f"_{_basename}_callback")
+		vars_name = self._get_name(_subtype, _type, _basename)
+		if Attrs.has(self, vars_name):
+			return Attrs.getitem(self, vars_name)
+		_vars = var_callback(_type, _subtype, common_kwargs)
+		Attrs.setitem(type(self), vars_name, _vars)
+		return Attrs.getitem(self, vars_name)
+	@staticmethod
+	def _common_params_helper(params: Mapping, kwargs: Mapping):
+		common_keys = params.keys() & kwargs.keys()
+		return {k: params[k] for k in common_keys}
+	@staticmethod
+	def _common_kwargs_helper(params: Mapping, kwargs: Mapping):
+		common_keys = params.keys() & kwargs.keys()
+		return {k: kwargs[k] for k in common_keys}
+	@staticmethod
+	def _get_name(
+		_subtype: str,
+		_type: str,
+		_basename: str,
+	):
+		type_placeholder = "" if _type == "all" else _type
+		return add_strs(
+			"",
+			_subtype,
+			type_placeholder,
+			_basename,
+			_lstrip_at_the_end = False,
+		)
+	def _params_callback(
+		self,
+		_type: str = "all",
+		_subtype: str = "",
+		common_kwargs: Optional[Mapping] = Param.DEFAULT,
+	):
 		_map = Param.DEFAULT
 		_callback = lambda k: k
+		_filter = lambda _: True
 		if _type == "valid":
-			_map = cls.VALID_PARAMS
-			_callback = lambda k: cls.str_func(k, cls.SUBSTR)
+			_map = self.VALID_PARAMS
+			_callback = lambda k: self.str_func(k, self.SUBSTR)
 		elif _type == "other":
-			_map = cls.PARAMS
+			_map = self.PARAMS
 		elif _type == "all":
-			_map = {**cls.PARAMS, **cls.params("valid")}
+			_map = {**self.PARAMS, **self.params("valid")}
 		else:
 			raise InvalidVal("_type", _type, ("valid", "other", "all"))
+		if _subtype == "common":
+			_map = Config._common_params_helper(self.params(_type), common_kwargs)
+		elif _subtype == "default":
+			_map = self.params(_type)
+			_filter = lambda v: v.default != Param.DEFAULT
 		return {
-			_callback(k): v for k, v in _map.items()
+			_callback(k): v for k, v in _map.items() if _filter(v)
 		}
-	@classmethod
-	def keys(cls, *args, **kwargs) -> KeysView[str]:
-		return cls.params(*args, **kwargs).keys()
+	def params(self,*args, **kwargs) -> Mapping[str, Param]:
+		return self.vars("params", *args, **kwargs)
+	def _props_callback(
+		self,
+		_type: str = "all",
+		_subtype: str = "",
+		common_kwargs: Optional[Mapping] = Param.DEFAULT,
+	):
+		_map = self.params(_type, _subtype, common_kwargs)
+		if _subtype == "":
+			_seq = _map.keys()
+			return {
+				k: getattr(self, k) for k in _seq
+			}
+		_callback = lambda v: v
+		if _subtype == "common":
+			_map = Config._common_kwargs_helper(self.params(_type), common_kwargs)
+		elif _subtype == "default":
+			_callback = lambda v: v.default
+		return {
+			k: _callback(v) for k, v in _map.items()
+		}
+	def props(self,*args, **kwargs) -> Mapping[str, Param]:
+		return self.vars("props", *args, **kwargs)
+	def keys(self, *args, **kwargs) -> KeysView[str]:
+		return self.params(*args, **kwargs).keys()
 
 StrConfNone = Optional[Union[str, Config]]
 
@@ -210,7 +276,6 @@ class TraversalUtils:
 			elif not Attrs.has(self, "config"):
 				raise InvalidType("Config", config, (str, Config))
 		Attrs(callback_val = get_config).set(configs, self)
-		pass
 	def props(self, config: Config, *args, **kwargs):
 		return {
 			k: getattr(self, k) for k in config.params(*args, **kwargs).keys()
@@ -288,7 +353,7 @@ class Attrs:
 		)
 	@staticmethod
 	def getitem(obj: Any, name: str, _return = False):
-		attr = None
+		attr = Param.DEFAULT
 		try:
 			attr = Attrs._getitem(obj, name)
 		except (AttributeError, KeyError) as e:
@@ -302,7 +367,7 @@ class Attrs:
 		(
 			obj.__setitem__(name, value)
 			if isinstance(obj, MutableMapping)
-			else obj.__setattr__(name, value)
+			else setattr(obj, name, value)
 		)
 	@staticmethod
 	def has(obj: Any, name: str) -> bool:
@@ -419,8 +484,132 @@ def stringify(items: Union[Any, Sequence], and_or: str = ","):
 	return ", ".join(items[:-1]) + f"{and_or_str}{items[-1]}"
 def isneg(res):
 	return isinstance(res, bool) and not res
-
 def tabbed_print(depth: int, *args, **kwargs):
 	print("\t".expandtabs(4)*depth, *args, **kwargs)
 def xnor(a:bool,b:bool):
 	return (a and b) or (not a and not b)
+def _return_stripped(
+	_str,
+	delim: str = "_",
+	_rstrip: bool = True,
+	_lstrip: bool = True,
+	_strip_str: Optional[str] = Param.DEFAULT,
+):
+	if _strip_str == Param.DEFAULT:
+		_strip_str = f" {delim}"
+	if _rstrip:
+		_str = _str.rstrip(_strip_str)
+	if _lstrip:
+		_str = _str.lstrip(_strip_str)
+	return _str
+
+def add_strs(
+	*strs: str,
+	_lstrip_at_the_end: bool = True,
+	_rstrip_at_the_end: bool = True,
+	_reverse_iter: bool = True,
+	**kwargs,
+):
+	_start_index = 0
+	_end_index = -1
+	_callback = lambda k: k
+	if _reverse_iter:
+		_start_index, _end_index = _end_index, _start_index
+		_callback = lambda k: reversed(k)
+	def str_args(s1, s2):
+		return (s2, s1) if _reverse_iter else (s1, s2)
+	_str = strs[_start_index]
+	for __str in _callback(strs[1:-1]):
+		_str = add_str(*str_args(_str, __str), **kwargs)
+	new_kwargs = {
+		**kwargs,
+		"_lstrip": _lstrip_at_the_end,
+		"_rstrip": _rstrip_at_the_end,
+	}
+	_str = add_str(*str_args(_str, strs[_end_index]), **new_kwargs)
+	return _str
+def add_str(
+	s1: str,
+	s2: str,
+	reverse: bool = False,
+	delim: str = "_",
+	_rstrip: bool = True,
+	_lstrip: bool = True,
+	_strip_str: Optional[str] = Param.DEFAULT,
+) -> str:
+	_start, _end = (s2, s1) if reverse else (s1, s2)
+	_str = f"{_start}{delim}{_end}"
+	return _return_stripped(
+		_str,
+		delim,
+		_rstrip,
+		_lstrip,
+		_strip_str,
+	)
+def print_equal(val1, val2, pretxt, _assert=False):
+	is_equal = val1 == val2
+	print(
+		f"{pretxt} {Result(int(not is_equal)).status_msg()}"
+	)
+	if _assert:
+		assert is_equal
+if __name__ == "__main__":
+	from test import Test
+	class UtilsTest(Test):
+		def config_test(self):
+			class DummyClass: pass
+			class DummyConfig(Config):
+				PARAMS = {
+					"param1": Param(type, repr = lambda x: x.__name__),
+					"param2": Param(int),
+					"param3": Param(int, 42),
+				}
+				VALID_PARAMS = {
+					"param1": Param(bool),
+					"param2": Param(str, "append"),
+				}
+				SUBSTR = "valid"
+				@classmethod
+				def str_func(cls, k, substr: Optional[str] = Param.DEFAULT):
+					return cls._str_func(k, substr)
+				def print(self, _raise = False):
+					_params = {
+						"_basename": ["params", "props"],
+						"_type": ["all", "valid", "other"],
+						"_subtype": ["", "default", "common"],
+						"common_kwargs": [
+							{
+								"param1": DummyClass,
+								"param1_valid": False,
+							},
+							Param.DEFAULT,
+						],
+					}
+					for _param in product_dict(_params):
+						common_kwargs = _param.pop("common_kwargs")
+						_name = self._get_name(**_param)
+						print(f"{_name} with {common_kwargs}")
+
+						try:
+							val1 = self.vars(
+								common_kwargs=common_kwargs,
+								**_param,
+							)
+							print(val1)
+							val2 = getattr(self, _name)
+							print(val2)
+							print_equal(val1, val2, "Values", True)
+						except BaseException:
+							if _raise:
+								raise
+							print(Result(1).status_msg())
+						print()
+
+			dc1 = DummyConfig(param1=DummyClass, param2_valid="n8n")
+			dc2 = DummyConfig(param2=31, param1_valid=True)
+			print("dc1")
+			dc1.print()
+			print("dc2")
+			dc2.print()
+	utils_test = UtilsTest()
+	utils_test()

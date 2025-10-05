@@ -1,8 +1,11 @@
 import logging
 import reprlib
+from typing import Any
 from test import Test
-from utils import Attrs, Param, Singleton
+from utils import Attrs, Param, Singleton, stringify_map
 import pprint as pp
+import black
+
 class Log(Singleton):
 	"""
 	Wrapper around `logging` package
@@ -28,11 +31,10 @@ class Log(Singleton):
 			_level = self.getEffectiveLevel()
 		if self.level(_level):
 			print(*args, **kwargs)
-	def repr(self, _repr: str):
+	def repr(self, _repr: Any):
 		if self.shorten and self.level(self.DEBUG):
 			_repr = reprlib.repr(_repr)
-		if len(_repr) > self.LONG:
-			_repr = pp.pformat(_repr)
+		_repr = black.format_str(str(_repr), mode=black.FileMode())
 		return _repr
 	def __getattr__(self, name: str):
 		if Attrs.has(logging, name):
@@ -46,3 +48,24 @@ class Log(Singleton):
 			)
 
 log = Log()
+
+if __name__ == "__main__":
+	class LogTest(Test):
+		def test_repr(self):
+			dummy_dic = {
+				231576523: 81347234,
+				"sydtysfdydf": True,
+				"asdsadsd": 8932642938,
+				"dfdfdfd": "2938432947",
+				2316523: 81347234,
+				"sydsfdydf": True,
+				"asdssd": 8932642938,
+				"dffdfd": "2938432947",
+				2315763: 81347234,
+				"sydtfdydf": True,
+				"asdsdsd": 8932642938,
+				"dfdfd": "2938432947",
+			}
+			print(log.repr(f"Type({stringify_map(dummy_dic)})"))
+	log_test = LogTest()
+	log_test()
