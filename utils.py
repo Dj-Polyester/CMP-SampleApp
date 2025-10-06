@@ -159,6 +159,20 @@ class Config:
 			s2,
 			reverse,
 		)
+	def typedparams(self,*args, **kwargs) -> Mapping[str, Param]:
+		return self.vars("params", *args, **kwargs)
+	def typedprops(self,*args, **kwargs) -> Mapping[str, Param]:
+		return self.vars("props", *args, **kwargs)
+	def typedkeys(self,*args, **kwargs) -> KeysView[str]:
+		return self.typedparams(*args, **kwargs).keys()
+
+	@classmethod
+	def typedparams_class(cls,*args, **kwargs) -> Mapping[str, Param]:
+		return cls.vars_class("params", *args, **kwargs)
+	@classmethod
+	def typedkeys_class(cls,*args, **kwargs) -> KeysView[str]:
+		return cls.typedparams_class(*args, **kwargs).keys()
+
 	def default_params(self, *args, **kwargs):
 		return self.typedparams(*args, _subtype = "default", **kwargs)
 	def common_params(self, *args, **kwargs):
@@ -185,6 +199,62 @@ class Config:
 	def other_props(self, *args, **kwargs):
 		return self.typedprops("other", *args, **kwargs)
 
+	def default_keys(self, *args, **kwargs):
+		return self.typedkeys(*args, _subtype = "default", **kwargs)
+	def common_keys(self, *args, **kwargs):
+		return self.typedkeys(*args, _subtype = "common", **kwargs)
+	def keys(self, *args, **kwargs):
+		return self.typedkeys(*args, **kwargs)
+	def all_keys(self, *args, **kwargs):
+		return self.typedkeys("all", *args, **kwargs)
+	def valid_keys(self, *args, **kwargs):
+		return self.typedkeys("valid", *args, **kwargs)
+	def other_keys(self, *args, **kwargs):
+		return self.typedkeys("other", *args, **kwargs)
+
+	@classmethod
+	def default_params_class(cls, *args, **kwargs):
+		return cls.typedparams_class(*args, _subtype = "default", **kwargs)
+	@classmethod
+	def all_params_class(cls, *args, **kwargs):
+		return cls.typedparams_class("all", *args, **kwargs)
+	@classmethod
+	def valid_params_class(cls, *args, **kwargs):
+		return cls.typedparams_class("valid", *args, **kwargs)
+	@classmethod
+	def other_params_class(cls, *args, **kwargs):
+		return cls.typedparams_class("other", *args, **kwargs)
+
+	@classmethod
+	def default_keys_class(cls, *args, **kwargs):
+		return cls.typedkeys_class(*args, _subtype = "default", **kwargs)
+	@classmethod
+	def all_keys_class(cls, *args, **kwargs):
+		return cls.typedkeys_class("all", *args, **kwargs)
+	@classmethod
+	def valid_keys_class(cls, *args, **kwargs):
+		return cls.typedkeys_class("valid", *args, **kwargs)
+	@classmethod
+	def other_keys_class(cls, *args, **kwargs):
+		return cls.typedkeys_class("other", *args, **kwargs)
+
+	def vars_cache(
+		self,
+		_basename: str,
+		_type: str = "",
+		_subtype: str = "",
+	):
+		vars_name = self._get_name(_type, _subtype, _basename)
+		return Attrs.getitem(self, vars_name)
+	@classmethod
+	def vars_class(
+		cls,
+		_basename: str,
+		_type: str = "",
+		_subtype: str = "",
+	):
+		vars_name = cls._get_name(_type, _subtype, _basename)
+		return Attrs.getitem(cls, vars_name)
 	def vars(
 		self,
 		_basename: str,
@@ -199,8 +269,12 @@ class Config:
 		if _subtype != "common" and Attrs.has(self, vars_name):
 			return Attrs.getitem(self, vars_name)
 		_vars = var_callback(_type, _subtype, common_kwargs)
-		Attrs.setitem(type(self), vars_name, _vars)
-		return Attrs.getitem(self, vars_name)
+		if _subtype != "common":
+			if self._current_type(_type):
+				Attrs.setitem(self, vars_name, _vars)
+			else:
+				Attrs.setitem(type(self), vars_name, _vars)
+		return _vars
 	@staticmethod
 	def _common_params_helper(params: Mapping, kwargs: Mapping):
 		common_keys = params.keys() & kwargs.keys()
@@ -292,8 +366,6 @@ class Config:
 			_callback_k,
 			_callback_v,
 		)
-	def typedparams(self,*args, **kwargs) -> Mapping[str, Param]:
-		return self.vars("params", *args, **kwargs)
 	def _props_callback(
 		self,
 		_type: str = "",
@@ -325,8 +397,6 @@ class Config:
 			_callback_k,
 			_callback_v,
 		)
-	def typedprops(self,*args, **kwargs) -> Mapping[str, Param]:
-		return self.vars("props", *args, **kwargs)
 
 StrConfNone = Optional[Union[str, Config]]
 
@@ -626,67 +696,95 @@ def print_equal(val1, val2, pretxt, _assert=True):
 		assert is_equal
 if __name__ == "__main__":
 	from test import Test
+	class DummyClass: pass
+	class DummyConfig(Config):
+		PARAMS = {
+			"param1": Param(type, repr = lambda x: x.__name__),
+			"param2": Param(int),
+			"param3": Param(int, 42),
+		}
+		VALID_PARAMS = {
+			"param1": Param(bool),
+			"param2": Param(str, "append"),
+		}
+		SUBSTR = "valid"
+		@classmethod
+		def str_func(cls, k, substr: Optional[str] = Param.DEFAULT):
+			return cls._str_func(k, substr)
 	class UtilsTest(Test):
-		def config_test(self):
-			class DummyClass: pass
-			class DummyConfig(Config):
-				PARAMS = {
-					"param1": Param(type, repr = lambda x: x.__name__),
-					"param2": Param(int),
-					"param3": Param(int, 42),
-				}
-				VALID_PARAMS = {
-					"param1": Param(bool),
-					"param2": Param(str, "append"),
-				}
-				SUBSTR = "valid"
-				@classmethod
-				def str_func(cls, k, substr: Optional[str] = Param.DEFAULT):
-					return cls._str_func(k, substr)
-				def print(self, _raise = True):
-					_params = {
-						"_type": ["all", "valid", "other"],
-						"_subtype": ["", "default", "common"],
-						"_basename": ["params", "props"],
-						"common_kwargs": [
-							{
-								"param1": DummyClass,
-								"param1_valid": False,
-							},
-							Param.DEFAULT,
-						],
-					}
-					def _condition(_subtype, common_kwargs, **kwargs):
-						return not (
-							_subtype == "common" and not isinstance(
-								common_kwargs, Mapping
-							)
-						)
-					for _param in product_dict(_params, _condition):
-						common_kwargs = _param.pop("common_kwargs")
-						_name = self._get_name(**_param)
-						print(f"{_name} with {common_kwargs}")
-
-						try:
-							val1 = self.vars(
-								common_kwargs=common_kwargs,
-								**_param,
-							)
-							print(val1)
-							val2 = getattr(self, _name)
-							print(val2)
-							print_equal(val1, val2, "Values", True)
-						except BaseException:
-							if _raise:
-								raise
-							print(Result(1).status_msg())
-						print()
-
+		def config_test(self, _raise = True):
+			_params = {
+				"_type": ["", "all", "valid", "other"],
+				"_subtype": ["", "default", "common"],
+				"_basename": ["params", "props"],
+				"common_kwargs": [
+					{
+						"param1": DummyClass,
+						"param1_valid": False,
+					},
+					Param.DEFAULT,
+				],
+			}
+			def _condition(_subtype, common_kwargs, **kwargs):
+				return not (
+					_subtype == "common" and not isinstance(
+						common_kwargs, Mapping
+					)
+				)
+			def getprintvals(prefix: str, dc: DummyConfig, _dcname: str, _call = True):
+				val_call = None
+				if _call:
+					val_call = dc.vars(
+						common_kwargs=common_kwargs,
+						**_param,
+					)
+					print(f"{prefix} call:{val_call}")
+				_subtype = _param["_subtype"]
+				_type = _param["_type"]
+				val_cache, val_class = None, None
+				if _subtype != "common":
+					val_cache = getattr(dc, _dcname)
+					print(f"{prefix} cache:{val_cache}")
+					if val_call != None:
+						print_equal(val_call, val_cache, f"{prefix} call cache", True)
+					if not dc._current_type(_type):
+						val_class = getattr(type(dc), _dcname)
+						print(f"{prefix} class:{val_class}")
+						print_equal(val_cache, val_class, f"{prefix} cache class", True)
+				return val_call, val_cache, val_class
 			dc1 = DummyConfig(param1=DummyClass, param2_valid="n8n")
 			dc2 = DummyConfig(param2=31, param1_valid=True)
-			print("dc1")
-			dc1.print()
-			print("dc2")
-			dc2.print()
+			for _param in product_dict(_params, _condition):
+				common_kwargs = _param.pop("common_kwargs")
+				_dc1name = dc1._get_name(**_param)
+				_dc2name = dc2._get_name(**_param)
+				print(f"{_dc1name}, {_dc2name} with {common_kwargs}")
+				try:
+					val_call2, val_cache2, val_class2 = getprintvals("dc2", dc2, _dc2name)
+					val_call1, val_cache1, val_class1 = getprintvals("dc1", dc1, _dc1name)
+					val_call2, val_cache2, val_class2 = getprintvals("previous dc2", dc2, _dc2name, False)
+					print("Compare with previous values")
+					if (
+						val_call1 != None and
+						val_call2 != None
+					):
+						print_equal(val_call1, val_call2, "Values call", False)
+					if (
+						val_cache1 != None and
+						val_cache2 != None
+					):
+						print_equal(val_cache1, val_cache2, "Values cache", False)
+					if (
+						val_class1 != None and
+						val_class2 != None
+					):
+						print_equal(val_class1, val_class2, "Values class", True)
+					print()
+					val_call2, val_cache2, val_class2 = getprintvals("dc2", dc2, _dc2name)
+				except BaseException:
+					if _raise:
+						raise
+					print(Result(1).status_msg())
+				print()
 	utils_test = UtilsTest()
 	utils_test()
