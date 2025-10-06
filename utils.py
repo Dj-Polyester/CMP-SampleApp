@@ -196,7 +196,7 @@ class Config:
 		if var_callback == Param.DEFAULT:
 			var_callback = Attrs.getitem(self, f"_{_basename}_callback")
 		vars_name = self._get_name(_type, _subtype, _basename)
-		if Attrs.has(self, vars_name):
+		if _subtype != "common" and Attrs.has(self, vars_name):
 			return Attrs.getitem(self, vars_name)
 		_vars = var_callback(_type, _subtype, common_kwargs)
 		Attrs.setitem(type(self), vars_name, _vars)
@@ -327,8 +327,6 @@ class Config:
 		)
 	def typedprops(self,*args, **kwargs) -> Mapping[str, Param]:
 		return self.vars("props", *args, **kwargs)
-	def keys(self, *args, **kwargs) -> KeysView[str]:
-		return self.typedparams(*args, **kwargs).keys()
 
 StrConfNone = Optional[Union[str, Config]]
 
@@ -658,7 +656,13 @@ if __name__ == "__main__":
 							Param.DEFAULT,
 						],
 					}
-					for _param in product_dict(_params):
+					def _condition(_subtype, common_kwargs, **kwargs):
+						return not (
+							_subtype == "common" and not isinstance(
+								common_kwargs, Mapping
+							)
+						)
+					for _param in product_dict(_params, _condition):
 						common_kwargs = _param.pop("common_kwargs")
 						_name = self._get_name(**_param)
 						print(f"{_name} with {common_kwargs}")
