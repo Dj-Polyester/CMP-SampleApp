@@ -10,12 +10,14 @@ class Log(Singleton):
 	"""
 	Wrapper around `logging` package
 	"""
-	LONG = 64
 	VERBOSE = logging.INFO
 	SILENT = logging.WARNING
-	def __init__(self, shorten = False):
+	def __init__(
+		self,
+		shorten = False,
+	):
 		logging.basicConfig(
-    		level=self.INFO,                     # Set minimum log level
+    		level=Log.VERBOSE,                     # Set minimum log level
     		format="%(asctime)s:%(levelname)s:%(message)s"
 		)
 		self.shorten = shorten

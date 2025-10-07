@@ -16,6 +16,9 @@ from typing import (
 from dataclasses import dataclass, field
 import sys
 
+class BaseUtils:
+	def type(self):
+		return type(self).__name__
 @dataclass
 class Param:
 	NON_DEFAULT: ClassVar[Any] = ...
@@ -109,7 +112,7 @@ class Result:
 class State:
 	result: Optional[Result] = Param.DEFAULT
 
-class Config:
+class Config(BaseUtils):
 	PROPERTIES = (
 		"str_func",
 	)
@@ -119,29 +122,28 @@ class Config:
 	def __init__(self, **kwargs):
 		_default_props = self.default_props("all")
 		_common_props = self.common_props("all",common_kwargs=kwargs)
-		self._props = {**_default_props, **_common_props}
+		self._props_init = {**_default_props, **_common_props}
 		self._check_type()
 		Attrs().set_check(
-			self._props,
+			self._props_init,
 			self,
 			_return = False,
 		)
 	def is_equal(self, other: 'Config'):
-		return self._props == other._props
+		return self._props_init == other._props_init
 	def _check_type(self):
 		_all_params = self.all_params()
-		for varname, var in self._props.items():
+		for varname, var in self._props_init.items():
 			param = _all_params[varname]
 			if not isinstance(var, param._type):
 				raise InvalidType(varname, var, param._type)
 	def __repr__(self):
+		_map = self.props()
 		repr_map = {
-			k: v.repr(getattr(self, k))
-			for k, v in self._params.items()
+			k: self._params[k].repr(getattr(self, k))
+			for k, v in _map.items()
 		}
-		return f"{self.type()}({stringify_map(repr_map)})"
-	def type(self):
-		return type(self).__name__
+		return repr_from_map(self, repr_map)
 	@classmethod
 	def str_func(cls, k, substr) -> str:
 		raise NotImplementedError()
@@ -335,7 +337,7 @@ class Config:
 		elif _type == "all":
 			_map = {**self.PARAMS, **self.valid_params()}
 		elif Config._current_type(_type):
-			_map = self._props
+			_map = self._props_init
 			_callback_v = lambda k, _: self.all_params()[k]
 		else:
 			raise InvalidVal("_type", _type, ("valid", "other", "all"))
@@ -375,8 +377,8 @@ class Config:
 		_map = self.typedparams(_type, _subtype, common_kwargs)
 		_seq = _map.keys()
 		_callback_k = lambda *args: args[0]
-		_callback_v = lambda *args: self._props[args[0]]
-		_filter = lambda *args: args[0] in self._props
+		_callback_v = lambda *args: self._props_init[args[0]]
+		_filter = lambda *args: args[0] in self._props_init
 		if _subtype == "common":
 			if isinstance(common_kwargs, Mapping):
 				_callback_v = lambda k: common_kwargs[k]
@@ -400,7 +402,7 @@ class Config:
 
 StrConfNone = Optional[Union[str, Config]]
 
-class TraversalUtils:
+class TraversalUtils(BaseUtils):
 	PRECONFIGS = {}
 	def __init__(self, *args, **kwargs):
 		self.setup(*args, **kwargs)
@@ -417,10 +419,8 @@ class TraversalUtils:
 			elif not Attrs.has(self, "config"):
 				raise InvalidType("Config", config, (str, Config))
 		Attrs(callback_val = get_config).set(configs, self)
-	def props(self, config: Config, *args, **kwargs):
-		return {
-			k: getattr(self, k) for k in config.typedparams(*args, **kwargs).keys()
-		}
+	def get_result(self):
+		return Result()
 def product_dict(
 	valid_mapping: Mapping,
 	condition: Callable = lambda **_: True,
@@ -694,6 +694,18 @@ def print_equal(val1, val2, pretxt, _assert=True):
 	)
 	if _assert:
 		assert is_equal
+def repr_from_maps(obj, _map: Mapping[str, Any], _iter: Iterable[str]):
+	Attrs(_iter).set_notnone(
+		obj,
+		_map,
+	)
+	return repr_from_map(obj, _map)
+def repr_from_map(
+	obj: Any,
+	_map: Mapping[str, Any],
+):
+	from log import log
+	return log.repr(f"{obj.type()}({stringify_map(_map)})")
 if __name__ == "__main__":
 	from test import Test
 	class DummyClass: pass

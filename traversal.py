@@ -5,6 +5,8 @@ from utils import (
 	Result,
 	Attrs,
 	print_equal,
+	repr_from_map,
+	repr_from_maps,
 	stringify,
 	stringify_map,
 	Config,
@@ -214,7 +216,7 @@ class TraversalState(TraversalUtils, State):
 		),
 	}
 	def print(self):
-		log.print(self, _level = log.DEBUG)
+		log.debug(self)
 	def get_containers(self, *params):
 		_valid_keys = TraversalTypeConfig.valid_keys_class()
 		_c = self.type_config.container
@@ -282,7 +284,6 @@ class TraversalState(TraversalUtils, State):
 		func_name: str,
 		container_name_parent: str,
 		parent_pointer: bool = False,
-		set_result = False,
 	):
 		parent_node = (
 			self.node.get_parent() if parent_pointer else self._container(container_name_parent).top()
@@ -291,14 +292,13 @@ class TraversalState(TraversalUtils, State):
 			parent_node,
 			self.node,
 		)
-		if set_result:
-			result = None
-			if isinstance(callback_ret, Result):
-				result = callback_ret
-			else:
-				result = Result()
-				result.set_code(callback_ret)
-			self.result = result
+		result = None
+		if isinstance(callback_ret, Result):
+			result = callback_ret
+		else:
+			result = self.get_result()
+			result.set_code(callback_ret)
+		return result
 	def add_children(self):
 		if self.type_config.special_token_before_children:
 			self.container.add_single(self.config.special_token)
@@ -324,22 +324,32 @@ class TraversalState(TraversalUtils, State):
 			_return = False,
 		)
 		self.env_vars = env_vars
-	def _break(self):
-		return Attrs.has(self, "result") and self.result.break_condition()
+	def _break(self, res: Optional[Result]):
+		return res != None and res.break_condition()
 	def forward(self, **env_vars):
+		res = None
 		self.node = self.container.pop()
-		if self.node == self.config.special_token: # Processed all children
+		if self.node == self.config.special_token:
 			self.node = self.parent_container.pop()
-			self.run("node_finalize", "parent_container", self.config.parent_pointer)
+			res = self.run(
+				"node_finalize",
+				"parent_container",
+				self.config.parent_pointer
+			)
 		else:
 			self.set_env_vars(**env_vars)
 			self.add_children()
-			self.run("node_init", "parent_container", set_result=True)
-			if self._break():
-				self.run("node_finalize", "parent_container", self.parent_pointer)
+			res = self.run("node_init", "parent_container")
+			if res.break_condition():
+				self.run(
+					"node_finalize",
+					"parent_container",
+					self.config.parent_pointer,
+				)
 			else:
 				self.parent_container.add_single(self.node)
 				self.backtrack_container.add_single(self.node)
+		return res
 	def backward_container(self, container_name: str):
 		self.run("node_backward", container_name)
 		self.node = self._container(container_name).pop()
@@ -347,12 +357,9 @@ class TraversalState(TraversalUtils, State):
 		self.config.node_backward(self.node.parent, self.node)
 		self.node = self.node.parent
 	def __repr__(self):
-		_props = self.props(self.type_config, "valid")
-		_other_props = ["result", "node"]
-		for prop in _other_props:
-			if Attrs.has(self, prop):
-				_props[prop] = getattr(self, prop)
-		return log.repr(f"TraverseState({stringify_map(_props)})")
+		_map = self.containers
+		_iter = ["result", "node"]
+		return repr_from_maps(self, _map, _iter)
 class Traversal(TraversalUtils):
 	PRECONFIGS = TraversalState.PRECONFIGS
 	def setup(
@@ -417,23 +424,24 @@ class Traversal(TraversalUtils):
 
 		self.set_containers([obj])
 		self.state.print()
-		while not (self.container.empty() or self._break()):
-			self.forward(**env_vars)
+		res = self.get_result()
+		while not (self.container.empty() or res.break_condition()):
+			res = self.state.forward(**env_vars)
 			self.state.print()
-		return self.result
+		return res
 	def recursive_backward(self, backward_mode = Param.DEFAULT):
 		if backward_mode != Param.DEFAULT:
 			self.state.config.backward_mode = backward_mode
-		self.print()
+		self.state.print()
 		is_container, bm_container_name = self.state.config.backward_container()
 		if is_container:
 			while not getattr(self.state, bm_container_name).empty():
 				self.backward_container(bm_container_name)
-				self.print()
+				self.state.print()
 		elif self.state.config.backward_mode == "parent_pointer":
 			while Attrs.has(self.state.node, "parent"):
 				self.backward_parent()
-				self.print()
+				self.state.print()
 		if is_container or self.state.config.backward_mode == "parent_pointer":
 			self.config.node_backward(Param.DEFAULT, self.node)
 			self.print()
@@ -455,10 +463,10 @@ if __name__ == "__main__":
 		_print_condition(obj, _callbacktxt)
 	def node_init(*args):
 		callbacktxt("node_init", *args)
-	def node_finalize(*args):
-		callbacktxt("node_finalize", *args)
 		if args[1].id == 6:
 			return False
+	def node_finalize(*args):
+		callbacktxt("node_finalize", *args)
 	def node_backward(*args):
 		callbacktxt("node_backward", *args)
 
@@ -476,7 +484,7 @@ if __name__ == "__main__":
 			return repr(self.id)
 		def backward(self, res: Result, **env_vars):
 			_print_condition(env_vars, "Backward:")
-			if res.exists():
+			if res.break_condition():
 				self.recursive_backward()
 		def __call__(self, **env_vars):
 			_print_condition(
@@ -590,6 +598,7 @@ Container after popping {container.pop()}: {container}
 				print(f"Container after adding {_items}: {container}\n")
 
 		def compare_implementations(self):
+			print("Dont check 'bfs' with backward_mode='parent'")
 			params = {
 				"_type": TraversalState.PRECONFIGS.keys(),
 				"backward_mode": TraversalStateConfig.VALID_BACKWARD_MODES.keys(),
