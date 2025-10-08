@@ -3,7 +3,7 @@ import time, subprocess, inspect, multiprocessing as mp
 from typing import Callable, Union, Iterable, Optional, Sequence
 from dataclasses import dataclass
 from traversal import Traversal, TraversalStateConfig
-from utils import InvalidType, InvalidVal, Param, Result, repr_from_map, stringify_map, tabbed_print, Attrs
+from utils import InvalidType, InvalidVal, Param, Result, repr_from_map, repr_from_maps, stringify_map, tabbed_print, Attrs
 from test import Test
 from log import log
 
@@ -47,7 +47,7 @@ class ExecutionResult(Result, Traversal):
 			retval_txt = ""
 		status_txt = f" {obj.status_msg()}"
 		exception_txt = None
-		if not obj.completed() and obj.exception.runnable.id == runnable_id:
+		if obj.break_condition() and obj.exception.runnable.id == runnable_id:
 			exctype = obj.exception.type
 			exception_title_txt = type(exctype).__name__
 			if hasattr(exctype, "stderr"):
@@ -109,7 +109,8 @@ class Runnable(Traversal):
 	def run(self) -> ExecutionResult:
 		raise NotImplementedError()
 	def _run_single(self) -> ExecutionResult:
-		pass
+		self.result.set_code(0)
+		return self.result
 	def _get_parent_runnable_call_stack(self, _ret_multitask = False) -> Optional['Runnable']:
 		def is_runnable_frame(frame, _type = Runnable):
 			return "self" in frame.f_locals and isinstance(frame.f_locals["self"], _type)
@@ -140,13 +141,14 @@ class Runnable(Traversal):
 			if parent_runnable != None:
 				if not Attrs.has(parent_runnable, "children"):
 					parent_runnable.children = []
-				if not Attrs.has(parent_runnable.children, self):
+				if self not in parent_runnable.children:
 					parent_runnable.children.append(self)
 				Runnable._set_id_depth_parent_attrs(parent_runnable, self)
 	def __call__(self, *args, **kwargs):
 		self._call_setup(*args, **kwargs)
 		self.run(*args, **kwargs)
-		self.result.print()
+		if self.depth == 0:
+			self.result.print()
 		return self.result
 	def _set_auto_id(self):
 		raise NotImplementedError()
@@ -281,11 +283,12 @@ class MultiTask(Runnable):
 		self,
 		traversal_type: str = "dfs",
 		backward_mode: str = "parent",
+		parent_pointer: bool = True,
 	) -> ExecutionResult:
-		self.print()
 		result = getattr(self, traversal_type)(
 			TraversalStateConfig(
 				backward_mode = backward_mode,
+				parent_pointer = parent_pointer,
 			),
 		)
 		if result.break_condition():
@@ -418,6 +421,7 @@ if __name__ == "__main__":
 				Pipeline(
 					Task(demo_task_1),
 				),
+				id = "a",
 			)()
 
 		def test4(self):
@@ -467,4 +471,4 @@ if __name__ == "__main__":
 		def test5(self):
 			Task(demo_task_1)()
 	test=PipelineTest()
-	test.test1()
+	test.test5()

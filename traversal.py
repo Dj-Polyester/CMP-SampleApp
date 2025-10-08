@@ -4,6 +4,8 @@ from log import log
 from utils import (
 	Result,
 	Attrs,
+	add_str,
+	cropstr,
 	print_equal,
 	repr_from_map,
 	repr_from_maps,
@@ -22,29 +24,27 @@ from test import Test
 class TraversalContainerConfig(Config):
 	"""
 	Arguments:
-		`_type (type)`: type of the container used such as `deque` or `list`
+		`container_type (type)`: type of the container used such as `deque` or `list`
 		`top_index (int)`: the index used in `top` method
 
 		The following fields are name of the methods available
-		for objects of type `_type` for which corresponding method is a placeholder for.
+		for objects of type `container_type` for which corresponding method is a placeholder for.
 
 		`pop_func (str):` the `pop` method
 		`add_single_func (str):` the `add_single` method
 		`add_multiple_func (str):` the `add_multiple` method
 	"""
 	PARAMS = {
-		"_type": Param(type, repr = lambda x: x.__name__),
+		"container_type": Param(type, repr = lambda x: x.__name__),
 		"top_index": Param(int),
-	}
-	VALID_PARAMS = {
-		"pop": Param(str),
-		"add_single": Param(str, "append"),
-		"add_multiple": Param(str, "extend"),
+		"func": {
+			"pop": Param(str),
+			"add_single": Param(str, "append"),
+			"add_multiple": Param(str, "extend"),
+		}
 	}
 	SUBSTR = "func"
-	@classmethod
-	def str_func(cls, k, substr: Optional[str] = Param.DEFAULT):
-		return cls._str_func(k, substr)
+	REVERSE = True
 
 class TraversalTypeConfig(Config):
 	"""
@@ -67,16 +67,14 @@ class TraversalTypeConfig(Config):
 	PARAMS = {
 		"proc_children": Param(Callable),
 		"special_token_before_children": Param(bool),
-	}
-	VALID_PARAMS = {
-		"": Param(Union[str, TraversalContainerConfig]),
-		"parent": Param(Union[str, TraversalContainerConfig, type(Param.NON_DEFAULT)], Param.NON_DEFAULT),
-		"backtrack": Param(Union[str, TraversalContainerConfig], "stack"),
+		"container": {
+			"": Param(Union[str, TraversalContainerConfig]),
+			"parent": Param(Union[str, TraversalContainerConfig, type(Param.NON_DEFAULT)], Param.NON_DEFAULT),
+			"backtrack": Param(Union[str, TraversalContainerConfig], "stack"),
+		}
 	}
 	SUBSTR = "container"
-	@classmethod
-	def str_func(cls, k, substr: Optional[str] = Param.DEFAULT):
-		return cls._str_func(k, substr)
+	REVERSE = True
 
 class TraversalStateConfig(Config):
 	"""
@@ -101,21 +99,22 @@ class TraversalStateConfig(Config):
 		"backward_mode": Param(str, "backtrace"),
 		"parent_pointer": Param(bool, False),
 		"proc_children": Param(Callable, lambda x: x),
+		"node": {
+			"init": Param(
+				Callable,
+				lambda _, __:None,
+			),
+			"finalize": Param(
+				Callable,
+				lambda _, __:None,
+			),
+			"backward": Param(
+				Callable,
+				lambda _, __:None,
+			),
+		},
 	}
-	VALID_PARAMS = {
-		"init": Param(
-			Callable,
-			lambda _, __:_,
-		),
-		"finalize": Param(
-			Callable,
-			lambda _, __:_,
-		),
-		"backward": Param(
-			Callable,
-			lambda _, __:_,
-		),
-	}
+	SUBSTR = "node"
 	VALID_BACKWARD_MODES = {
 		"backtrace": "backtrack",
 		"parent": "parent",
@@ -126,12 +125,8 @@ class TraversalStateConfig(Config):
 			self.backward_mode
 		]
 		if bm != Param.DEFAULT:
-			return True, TraversalTypeConfig.str_func(bm)
+			return True, add_str(bm, TraversalTypeConfig.SUBSTR)
 		return False, self.backward_mode
-	SUBSTR = "node"
-	@classmethod
-	def str_func(cls, k, substr: Optional[str] = Param.DEFAULT):
-		return cls._str_func(substr, k)
 
 class TraversalContainer(TraversalUtils):
 	"""
@@ -146,10 +141,10 @@ class TraversalContainer(TraversalUtils):
 	"""
 	PRECONFIGS = {
 		"stack": TraversalContainerConfig(
-			_type=list, top_index=-1, pop_func="pop",
+			container_type=list, top_index=-1, pop_func="pop",
 		),
 		"queue": TraversalContainerConfig(
-			_type=deque, top_index=0, pop_func="popleft",
+			container_type=deque, top_index=0, pop_func="popleft",
 		),
 	}
 	def __getattr__(self, name: str):
@@ -161,25 +156,30 @@ class TraversalContainer(TraversalUtils):
 			raise InvalidAttr(self, name)
 	def setup(self, config: Union[str, TraversalContainerConfig]):
 		self.set_configs(config)
-
 	def _setup(self, items= Param.DEFAULT):
-		self._container = self.config._type() if items == Param.DEFAULT else self.config._type(items)
-		def _callback_val(val: Union[str, Callable]):
-			if isinstance(val, str):
-				return getattr(self._container, val)
-			elif isinstance(val, Callable):
-				return val
-			else:
-				raise InvalidVal("val", val, (str, Callable))
+		self._container = self.config.container_type() if items == Param.DEFAULT else self.config.container_type(items)
 		Attrs(
-			TraversalContainerConfig.VALID_PARAMS,
-			callback_name = lambda name: f"{name}_{TraversalContainerConfig.SUBSTR}",
-			callback_val = _callback_val,
+			self.config.PARAMS[TraversalContainerConfig.SUBSTR],
+			callback_name = lambda name: add_str(
+				name,
+				TraversalContainerConfig.SUBSTR,
+			),
+			callback_val = Attrs._callback_str_callable(self._container),
 		).set_check(
 			self.config,
 			self,
 			_return = False,
 		)
+		pass
+		# Attrs(
+		# 	TraversalContainerConfig.VALID_PARAMS,
+		# 	callback_name = lambda name: f"{name}_{TraversalContainerConfig.SUBSTR}",
+		# 	callback_val = _callback_val,
+		# ).set_check(
+		# 	self.config,
+		# 	self,
+		# 	_return = False,
+		# )
 	def __call__(self, items= Param.DEFAULT):
 		container = TraversalContainer(self.config)
 		container._setup(items)
@@ -218,7 +218,7 @@ class TraversalState(TraversalUtils, State):
 	def print(self):
 		log.debug(self)
 	def get_containers(self, *params):
-		_valid_keys = TraversalTypeConfig.valid_keys_class()
+		_valid_keys = self.type_config.typedkeys("all", group = "container")
 		_c = self.type_config.container
 		_pc = self.type_config.parent_container
 
@@ -254,7 +254,7 @@ class TraversalState(TraversalUtils, State):
 		else:
 			containers = {**self.get_containers(), **containers}
 		self._config_containers(**containers)
-		_valid_keys = TraversalTypeConfig.valid_keys_class()
+		_valid_keys = self.type_config.typedkeys(group = "container")
 		Attrs(_valid_keys).set_check(
 			containers,
 			self,
@@ -370,7 +370,7 @@ class Traversal(TraversalUtils):
 		self.state = TraversalState(state_config, type_config)
 		# Callbacks
 		state_config = self.state.config
-		_valid_defaults = state_config.default_params("valid")
+		_valid_defaults = state_config.typedparams("all", "default")
 		attrs = Attrs(
 			_valid_defaults.keys(),
 			condition_name = lambda x: Attrs.has(state_config, x),
@@ -383,7 +383,7 @@ class Traversal(TraversalUtils):
 		).get(self)
 		_all_valid = {**_valid_defaults, **_valid_props, **_self_props}
 		attrs._with(
-			TraversalStateConfig.valid_keys_class()
+			state_config.typedkeys("all", group = "node")
 		).set_check(
 			_all_valid,
 			state_config,
@@ -496,7 +496,7 @@ if __name__ == "__main__":
 			self,
 			_type,
 			backward_mode: str,
-			parent_pointer: str,
+			parent_pointer: bool,
 			**env_vars,
 		):
 			super().__call__(**env_vars)
@@ -526,7 +526,7 @@ if __name__ == "__main__":
 			self,
 			_type,
 			backward_mode: str,
-			parent_pointer: str,
+			parent_pointer: bool,
 			**env_vars,
 		):
 			super().__call__(**env_vars)
@@ -568,7 +568,7 @@ if __name__ == "__main__":
 				"container_config" : [
 					"stack",
 					"queue",
-					TraversalContainerConfig(_type=deque, top_index=0, pop_func="popleft"),
+					TraversalContainerConfig(type=deque, top_index=0, pop_func="popleft"),
 				],
 				"items": [
 					[31, 69],
