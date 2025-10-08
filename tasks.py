@@ -123,7 +123,10 @@ class Runnable(Traversal):
 			raise ValueError("Frame is None")
 		runnable: Optional[Task] = None
 		while not is_global(frame):
-			if is_runnable_frame(frame, Task):
+			if (
+				is_runnable_frame(frame, Task) and
+				(self.type() != "Task" or self.id != frame.f_locals["self"].id)
+			):
 				runnable = frame.f_locals["self"]
 				break
 			frame = frame.f_back
@@ -146,7 +149,11 @@ class Runnable(Traversal):
 				Runnable._set_id_depth_parent_attrs(parent_runnable, self)
 	def __call__(self, *args, **kwargs):
 		self._call_setup(*args, **kwargs)
+		if self.type() == "Task":
+			Runnable.node_init(self.get_parent(), self)
 		self.run(*args, **kwargs)
+		if self.type() == "Task":
+			Runnable.node_finalize(self.get_parent(), self)
 		if self.depth == 0:
 			self.result.print()
 		return self.result
@@ -470,5 +477,16 @@ if __name__ == "__main__":
 			)()
 		def test5(self):
 			Task(demo_task_1)()
+		def test6(self):
+			def subfunc():
+				print("We are in subfunc!")
+				Task(demo_task_1)()
+			Pipeline(
+				Pipeline(
+					Task(demo_task_1),
+					Task(demo_task_2),
+				),
+				Task(subfunc),
+			)()
 	test=PipelineTest()
-	test.test5()
+	test.test6()
