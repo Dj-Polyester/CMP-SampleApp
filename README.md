@@ -50,7 +50,8 @@ Setting up CMP is not as uniform as the development process itself. The followin
 
 Kotlin and Java projects use a build automation tool called *Gradle*. Gradle organizes files as projects in hierarchical manner expressed as `:subproject:subsubproject:...`. Each project has its own configuration in a `build.gradle` file located in its root directory.
 These projects can be included in a `settings.gradle` file and `gradle projects` give list of all these projects within a directory. The
-developer doesn't need to install Gradle manually as a binary (`gradlew`) is provided with each KMP and Android project.
+developer doesn't need to install Gradle manually as a binary (`gradlew`) is provided with each KMP and Android project. `android_debug` script handles all of these by itself. It also includes some preprocessing steps for a
+pipeline with less warnings and errors.
 
 ## Android
 
